@@ -33,3 +33,6 @@
 
 # Compiled Arduino binaries
 *.mega.hex
+
+# Libraries folder
+libraries/*
