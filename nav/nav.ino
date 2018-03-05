@@ -214,8 +214,8 @@ void move(int option){
 
 
 float getHeading(){
-  // since we use the z axis for heading:
-  return (float) 180*atan2(imu.mag_y(),imu.mag_x())/PI;
+  // since we use the z axis for heading, and azimuth is calculated clockwise:
+  return -atan2(imu.mag_y(),imu.mag_x());
 }
 
 // For imu heading direction testing
