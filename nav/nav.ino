@@ -212,6 +212,12 @@ void move(int option){
   }
 }
 
+float getBearing(double lat, double lon, double det_lat, double det_lon){
+  // get bearing based on two GPS locations
+  double y = sin(det_lon - lon) * cos(det_lat);
+  double x = cos(lat)*sin(det_lat) - sin(lat)*cos(det_lat)*cos(det_lon - lon);
+  return atan2(y, x);
+}
 
 float getHeading(){
   // since we use the z axis for heading, and azimuth is calculated clockwise:
