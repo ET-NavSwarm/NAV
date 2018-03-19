@@ -5,6 +5,7 @@
 #include <SparkFunMPL3115A2.h>
 #include <IMU.h>
 #include <math.h>
+#include "TinyGPS++.h"
 
 #define FORWARD 0
 #define BACKWARD 1
@@ -34,6 +35,8 @@ void useInterrupt(boolean); // Func prototype keeps Arduino 0023 happy
 
 
 Adafruit_GPS GPS(&Serial1);
+TinyGPSPlus gps;
+
 float seaLevelPressure = SENSORS_PRESSURE_SEALEVELHPA;
 
 IMU imu;
@@ -96,10 +99,13 @@ void loop(){
   //  adjust(NORTH, 0 );
   //  counter = 8000;
   //}
-  Serial.println(getHeading());
-  reportPressure();
+  //update gps
   reportGPS();
-  move( irsensor() );
+  
+  Serial.println(getHeading());
+  
+  delay(1000);
+  //move( irsensor() );
 }
 
 
@@ -211,6 +217,7 @@ void move(int option){
     delay(400);  
   }
 }
+
 
 float getBearing(double lat, double lon, double det_lat, double det_lon){
   // get bearing based on two GPS locations
@@ -329,7 +336,13 @@ void reportPressure(){
 
 void reportGPS(){
   if (GPS.newNMEAreceived()) {
-    Serial.println(GPS.lastNMEA());
+    String NMEA = GPS.lastNMEA();
+    Serial.println(NMEA);
+    for(int i=0; i<NMEA.length(); i++)
+      gps.encode(NMEA[i]);
+    Serial.println(gps.satellites.value());
+    Serial.println(gps.location.lat(), 6);
+    Serial.println(gps.location.lng(), 6);
     if (!GPS.parse(GPS.lastNMEA()))
       return;
   }
