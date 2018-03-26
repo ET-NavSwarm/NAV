@@ -6,6 +6,9 @@
 #include <IMU.h>
 #include <math.h>
 #include "TinyGPS++.h"
+#include <pt.h>
+#include <clock.h>
+#include <timer.h>
 
 #define FORWARD 0
 #define BACKWARD 1
@@ -42,6 +45,12 @@ float seaLevelPressure = SENSORS_PRESSURE_SEALEVELHPA;
 IMU imu;
 
 MPL3115A2 pressure_sensor;
+
+
+// protothread declarations
+static struct pt ptSerial;
+static struct pt ptSensors;
+static struct pt ptDrive;
 
 
 bool needsLocation = true;
@@ -88,7 +97,52 @@ void setup(){
 
   /* initialize IMU */
   imu.initalize(CALIBRATE_GYRO);
-  delay(500); 
+
+  PT_INIT(&ptSerial);
+  PT_INIT(&ptSensors);
+  PT_INIT(&ptDrive);
+}
+
+static PT_THREAD(serialThread(struct pt *pt)){
+  PT_BEGIN(pt);
+  static char buff[64];
+
+  while(1){
+    PT_WAIT_UNTIL(pt, Serial.available());
+    Serial.readBytes(buff, 64);
+    // simple echo for now just to show it works
+    Serial.println(buff);
+  }
+  
+  PT_END(pt);
+}
+
+static PT_THREAD(sensorThread(struct pt *pt)){
+  static struct timer t;
+  PT_BEGIN(pt);
+
+  timer_set(&t, 0.1*CLOCK_SECOND); // run 10 times per second
+  
+  while(1){
+    PT_WAIT_UNTIL(pt, timer_expired(&t));
+    
+    // read, store, and use sensor values
+    
+    timer_reset(&t);
+  }
+  PT_END(pt);
+}
+
+static PT_THREAD(driveThread(struct pt *pt)){
+  static struct timer t;
+  PT_BEGIN(pt);
+
+  timer_set(&t, 0.1*CLOCK_SECOND); // run 10 times per second
+
+  while(1){
+    PT_WAIT_UNTIL(pt, timer_expired(&t));
+  }
+  PT_END(pt);
 }
 
 
@@ -100,12 +154,15 @@ void loop(){
   //  counter = 8000;
   //}
   //update gps
-  reportGPS();
+  //reportGPS();
   
-  Serial.println(getHeading());
+  //Serial.println(getHeading());
   
-  delay(1000);
+  //delay(1000);
   //move( irsensor() );
+
+
+  serialThread(&ptSerial);
 }
 
 
