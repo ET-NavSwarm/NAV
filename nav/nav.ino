@@ -134,13 +134,53 @@ static PT_THREAD(sensorThread(struct pt *pt)){
 }
 
 static PT_THREAD(driveThread(struct pt *pt)){
-  static struct timer t;
+  static struct timer t_main;
+  static struct timer t_movement;
+  
   PT_BEGIN(pt);
 
-  timer_set(&t, 0.1*CLOCK_SECOND); // run 10 times per second
+  timer_set(&t_main, 0.1*CLOCK_SECOND); // run 10 times per second
+  timer_set(&t_movement, 0); // immediately expire for now
 
   while(1){
-    PT_WAIT_UNTIL(pt, timer_expired(&t));
+    PT_WAIT_UNTIL(pt, timer_expired(&t_main) && timer_expired(&t_movement));
+    int dir = irsensor();
+    switch (dir) {
+      case BACKWARD:
+        digitalWrite(22,LOW);            // HIGH for forward LOW for reverse
+        digitalWrite(23,LOW);            // HIGH for forward LOW for reverse
+        analogWrite(2,power/2);
+        analogWrite(3,power/2);
+        timer_set(&t_movement, CLOCK_SECOND);
+        break;
+      case STOP:  // Currently never evoked
+        analogWrite(2,0);
+        analogWrite(3,0);
+        timer_set(&t_movement, 0.1*CLOCK_SECOND);
+        break;
+      case LEFT:
+        digitalWrite(22,HIGH);
+        digitalWrite(23,LOW);
+        analogWrite(2,turnpower);
+        analogWrite(3,turnpower);
+        timer_set(&t_movement, 0.4*CLOCK_SECOND);
+        break;
+      case RIGHT:
+        digitalWrite(22,LOW);
+        digitalWrite(23,HIGH);
+        analogWrite(2,turnpower);
+        analogWrite(3,turnpower);
+        timer_set(&t_movement, 0.4*CLOCK_SECOND);
+        break;
+      default:
+        // FORWARD
+        digitalWrite(22,HIGH);
+        digitalWrite(23,HIGH);
+        analogWrite(2,power);
+        analogWrite(3,power);
+        // no timer so IR sensors are constantly checked when moving forward
+    }
+    timer_reset(&t_main);
   }
   PT_END(pt);
 }
@@ -157,26 +197,19 @@ void loop(){
   //reportGPS();
   
   //Serial.println(getHeading());
-  
-  //delay(1000);
-  //move( irsensor() );
 
 
   serialThread(&ptSerial);
+  sensorThread(&ptSensor);
+  driveThread(&ptDrive);
 }
 
-
-
-
-void moveForward(){
-    digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
-    digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
-    analogWrite(2,power);
-    analogWrite(3,power);
-    delay(1000);  
+void setPreviousPins( int s0, int s1, int s2, int s3 ){
+    lastsensorpindata0 = s0;
+    lastsensorpindata1 = s1;
+    lastsensorpindata2 = s2;
+    lastsensorpindata3 = s3;  
 }
-
-
 
 int irsensor(){
   //Distance (cm) = 4800/(SensorValue - 20)
@@ -191,10 +224,10 @@ int irsensor(){
       setPreviousPins( 0, 0, 0, 0);
       return BACKWARD;
     }
-    else {
-      //setPreviousPins( distance0, distance1, distance2, distance3);
-      //return STOP;
-    }
+    /*else {
+      setPreviousPins( distance0, distance1, distance2, distance3);
+      return STOP;
+    }*/
   } 
 
   // obstacle in front
@@ -224,55 +257,6 @@ int irsensor(){
   }
   setPreviousPins( distance0, distance1, distance2, distance3);
   return FORWARD;
-}
-
-
-
-
-
-void move(int option){
-  //forward 
-
-  if(option == FORWARD){
-    digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
-    digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
-    analogWrite(2,power);
-    analogWrite(3,power);
-    return;
-  } 
-  //backwards
-  else if(option == BACKWARD){
-    digitalWrite(22,LOW);   
-    digitalWrite(23,LOW); 
-    analogWrite(2,50);       //forward
-    analogWrite(3,50);   //reverse 
-    delay(1000);
-    return;
-  }
-  //Stall Stop 
-  else if(option == STOP){
-    analogWrite(2,0);
-    analogWrite(3,0);
-    delay(100);
-    return;
-  } 
-   
-  //turn left
-  if(option == LEFT){ 
-    digitalWrite(22,HIGH);   
-    digitalWrite(23,LOW); 
-    analogWrite(2,turnpower);       //forward
-    analogWrite(3,turnpower);   //reverse 
-    delay(400);
-  }
-  //turn right
-  else if(option == RIGHT){     
-    digitalWrite(22,LOW);
-    digitalWrite(23,HIGH); 
-    analogWrite(2,turnpower);       //forward
-    analogWrite(3,turnpower);   //reverse 
-    delay(400);  
-  }
 }
 
 
@@ -371,17 +355,6 @@ bool adjustHelper( int goal, int displacement ){
   
   Serial.println(F(""));
 }
- 
-
-
-
-
-void setPreviousPins( int s0, int s1, int s2, int s3 ){
-    lastsensorpindata0 = s0;
-    lastsensorpindata1 = s1;
-    lastsensorpindata2 = s2;
-    lastsensorpindata3 = s3;  
-}
 
 void reportPressure(){
   Serial.print("Pressure(Pa):");
@@ -404,5 +377,4 @@ void reportGPS(){
       return;
   }
 }
-
 
