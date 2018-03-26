@@ -189,15 +189,10 @@ static PT_THREAD(driveThread(struct pt *pt)){
 int counter = 0;
 
 void loop(){
-  //if ( counter-- <= 0 ){
-  //  adjust(NORTH, 0 );
-  //  counter = 8000;
-  //}
   //update gps
   //reportGPS();
   
   //Serial.println(getHeading());
-
 
   serialThread(&ptSerial);
   sensorThread(&ptSensor);
@@ -272,90 +267,6 @@ float getHeading(){
   return -atan2(imu.mag_y(),imu.mag_x());
 }
 
-// For imu heading direction testing
-void adjust( int goal, int displacement){
-  bool searching = true;
-  while( searching ){
-     searching = adjustHelper( goal, displacement);
-  }
-}
-
-
-bool adjustHelper( int goal, int displacement ){
-  /* update the IMU internal values, accessed through methods for each variable */
-  imu.read();
-  /* Calculate the heading using the magnetometer */
-  int heading = getHeading();
-  Serial.print(F("Heading: "));
-  Serial.print(heading);
-  Serial.print(F("; "));
-
-
-  if ( goal == NORTH ) {
-    int left = displacement+344;
-    int right = displacement+15;
-    int turnthreshhold = displacement+180;
-    if ( heading > left || heading < right ){
-        move(STOP);
-        return false;
-    }
-    else if ( heading < turnthreshhold )
-        move(LEFT);
-    else 
-       move(RIGHT); 
-    return true;  
-  }
-
-
-   if ( goal == SOUTH ) {
-    int right = displacement+205;
-    int left = displacement+155;
-    int turnthreshhold = displacement + 180;
-    if ( heading > left && heading < right ){
-        move(STOP);
-        return false;
-    }
-    else if( (heading < turnthreshhold) )
-        move(RIGHT);
-    else 
-       move(LEFT); 
-    return true;  
-  }
-
-
-  if ( goal == EAST ){
-    int left = displacement+65;
-    int right = displacement+115;
-    int turnthreshhold = displacement+270;
-    if ( heading > left && heading < right ){
-        move(STOP);
-        return false;
-    }
-    else if ( (heading < turnthreshhold)  &&  ( heading > left) )  
-      move(LEFT);
-    else 
-      move(RIGHT); 
-    return true;       
-  }
-
-
-  if ( goal == WEST ){
-    int left = displacement+245;
-    int right = displacement+295;
-    int turnthreshhold = displacement+90;      
-    if ( heading > left && heading < right ){
-        return false;
-    }
-    else if ( (heading > turnthreshhold)  &&  ( heading < left) )  
-      move(RIGHT);
-    else 
-      move(LEFT); 
-    return true;       
-  }
-  
-  Serial.println(F(""));
-}
-
 void reportPressure(){
   Serial.print("Pressure(Pa):");
   Serial.print(pressure_sensor.readPressure(), 2);
@@ -377,4 +288,3 @@ void reportGPS(){
       return;
   }
 }
-
