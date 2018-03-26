@@ -311,7 +311,6 @@ int irsensor(){
   return FORWARD;
 }
 
-
 float getBearing(double lat, double lon, double det_lat, double det_lon){
   // get bearing based on two GPS locations
   double y = sin(det_lon - lon) * cos(det_lat);
