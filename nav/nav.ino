@@ -108,19 +108,6 @@ void loop(){
   //move( irsensor() );
 }
 
-
-
-
-void moveForward(){
-    digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
-    digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
-    analogWrite(2,power);
-    analogWrite(3,power);
-    delay(1000);  
-}
-
-
-
 int irsensor(){
   //Distance (cm) = 4800/(SensorValue - 20)
   int distance0 = analogRead(sensorpin0);
