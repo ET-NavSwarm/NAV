@@ -6,6 +6,11 @@
 #include <IMU.h>
 #include <math.h>
 #include "TinyGPS++.h"
+#include <pt.h>
+#include <clock.h>
+#include <timer.h>
+
+#define DEBUG_INFO false
 
 #define FORWARD 0
 #define BACKWARD 1
@@ -43,9 +48,11 @@ IMU imu;
 
 MPL3115A2 pressure_sensor;
 
-
-bool needsLocation = true;
-bool updated = false;
+// protothread declarations
+static struct pt ptSerial;
+static struct pt ptSensor;
+static struct pt ptDrive;
+static struct pt ptDebug;
 
 int sensorpin0 = A0;               
 int sensorpin1 = A1;          
@@ -63,6 +70,17 @@ int previousheading = 0;
 const int power = 80; 
 const int turnpower = 120;
 
+
+// current data values
+float temperature = -1.0;
+float pressure = -1.0;
+double goalLat = -1.0;
+double goalLon = -1.0;
+double currLat = -1.0;
+double currLon = -1.0;
+
+// simple state for serial control
+int forceDirection = FORWARD;
 
 void setup(){
   /* set up motors */
@@ -88,27 +106,164 @@ void setup(){
 
   /* initialize IMU */
   imu.initalize(CALIBRATE_GYRO);
-  delay(500); 
+  
+  PT_INIT(&ptDrive);
+  PT_INIT(&ptSerial);
+  PT_INIT(&ptSensor);
+  PT_INIT(&ptDebug);
 }
 
+static PT_THREAD(serialThread(struct pt *pt)){
+  PT_BEGIN(pt);
+  static char buff[65]; // one extra character to always null terminate
 
-int counter = 0;
+  while(1){
+    PT_WAIT_UNTIL(pt, Serial.available());
+    int numBytes = Serial.readBytes(buff, 64);
+    // simple echo for now just to show it works
+    Serial.println(buff);
+
+    // change force direction if a direction or "auto" is input
+    if (!strcmp(buff, "stop")) forceDirection = STOP;
+    if (!strcmp(buff, "forward")) forceDirection = FORWARD;
+    if (!strcmp(buff, "backward")) forceDirection = BACKWARD;
+    if (!strcmp(buff, "left")) forceDirection = LEFT;
+    if (!strcmp(buff, "right")) forceDirection = RIGHT;
+    if (!strcmp(buff, "auto")) forceDirection = -1;
+
+    // clear buffer
+    for (int i=0; i<numBytes; i++) buff[i] = '\0';
+  }
+  
+  PT_END(pt);
+}
+
+static PT_THREAD(driveThread(struct pt *pt)){
+  static struct timer t_main;
+  static struct timer t_movement;
+  
+  PT_BEGIN(pt);
+
+  timer_set(&t_main, 0.1*CLOCK_SECOND);
+  timer_set(&t_movement, 0); // immediately expire for now
+
+  while(1){
+    PT_WAIT_UNTIL(pt, timer_expired(&t_main) && timer_expired(&t_movement));
+    int dir = irsensor();
+    switch (dir) {
+      case BACKWARD:
+        digitalWrite(22,LOW);            // HIGH for forward LOW for reverse
+        digitalWrite(23,LOW);            // HIGH for forward LOW for reverse
+        analogWrite(2,power/2);
+        analogWrite(3,power/2);
+        timer_set(&t_movement, CLOCK_SECOND);
+        Serial.println("drive -- backward");
+        break;
+      case STOP:  // Currently only called in testing
+        analogWrite(2,0);
+        analogWrite(3,0);
+        timer_set(&t_movement, 0.5*CLOCK_SECOND);
+        Serial.println("drive -- stop");
+        break;
+      case LEFT:
+        digitalWrite(22,HIGH);
+        digitalWrite(23,LOW);
+        analogWrite(2,turnpower);
+        analogWrite(3,turnpower);
+        timer_set(&t_movement, 0.4*CLOCK_SECOND);
+        Serial.println("drive -- left");
+        break;
+      case RIGHT:
+        digitalWrite(22,LOW);
+        digitalWrite(23,HIGH);
+        analogWrite(2,turnpower);
+        analogWrite(3,turnpower);
+        timer_set(&t_movement, 0.4*CLOCK_SECOND);
+        Serial.println("drive -- right");
+        break;
+      default:
+        // FORWARD
+        digitalWrite(22,HIGH);
+        digitalWrite(23,HIGH);
+        analogWrite(2,power);
+        analogWrite(3,power);
+        // no timer so IR sensors are constantly checked when moving forward
+        Serial.println("drive -- forward");
+    }
+    timer_reset(&t_main);
+  }
+  PT_END(pt);
+}
+
+static PT_THREAD(sensorThread(struct pt *pt)){
+  static struct timer t;
+  PT_BEGIN(pt);
+
+  timer_set(&t, 0.2*CLOCK_SECOND);
+  
+  while(1){
+    PT_WAIT_UNTIL(pt, timer_expired(&t));
+    
+    // read, store, and use sensor values
+    pressure = pressure_sensor.readPressure();
+    temperature = pressure_sensor.readTemp();
+
+    // update internal gps values and store what we specifically need.
+    if (GPS.newNMEAreceived()) {
+      String NMEA = GPS.lastNMEA();
+      //Serial.println(NMEA);
+      for(int i=0; i<NMEA.length(); i++)
+        gps.encode(NMEA[i]);
+      currLat = gps.location.lat();
+      currLon = gps.location.lng();
+    }
+
+    // update internal imu values
+    imu.read();
+
+    Serial.println("sensors updated");
+    
+    timer_reset(&t);
+  }
+  PT_END(pt);
+}
+
+static PT_THREAD(debugThread(struct pt *pt)){
+  static struct timer t;
+  PT_BEGIN(pt);
+
+  timer_set(&t, 2*CLOCK_SECOND);
+
+  while(1){
+    PT_WAIT_UNTIL(pt, timer_expired(&t));
+    
+    Serial.println("DEBUG INFO HERE");
+    
+    timer_reset(&t);
+  }
+  PT_END(pt);
+}
 
 void loop(){
-  //if ( counter-- <= 0 ){
-  //  adjust(NORTH, 0 );
-  //  counter = 8000;
-  //}
-  //update gps
-  reportGPS();
-  
-  Serial.println(getHeading());
-  
-  delay(1000);
-  //move( irsensor() );
+  driveThread(&ptDrive);
+  serialThread(&ptSerial);
+  sensorThread(&ptSensor);
+  if(DEBUG_INFO) debugThread(&ptDebug);
+}
+
+void setPreviousPins( int s0, int s1, int s2, int s3 ){
+    lastsensorpindata0 = s0;
+    lastsensorpindata1 = s1;
+    lastsensorpindata2 = s2;
+    lastsensorpindata3 = s3;  
 }
 
 int irsensor(){
+  // testing for *very* simple serial control
+  if (forceDirection != -1) {
+    return forceDirection;
+  }
+  
   //Distance (cm) = 4800/(SensorValue - 20)
   int distance0 = analogRead(sensorpin0);
   int distance1 = analogRead(sensorpin1); 
@@ -121,10 +276,10 @@ int irsensor(){
       setPreviousPins( 0, 0, 0, 0);
       return BACKWARD;
     }
-    else {
-      //setPreviousPins( distance0, distance1, distance2, distance3);
-      //return STOP;
-    }
+    /*else {
+      setPreviousPins( distance0, distance1, distance2, distance3);
+      return STOP;
+    }*/
   } 
 
   // obstacle in front
@@ -157,55 +312,6 @@ int irsensor(){
 }
 
 
-
-
-
-void move(int option){
-  //forward 
-
-  if(option == FORWARD){
-    digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
-    digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
-    analogWrite(2,power);
-    analogWrite(3,power);
-    return;
-  } 
-  //backwards
-  else if(option == BACKWARD){
-    digitalWrite(22,LOW);   
-    digitalWrite(23,LOW); 
-    analogWrite(2,50);       //forward
-    analogWrite(3,50);   //reverse 
-    delay(1000);
-    return;
-  }
-  //Stall Stop 
-  else if(option == STOP){
-    analogWrite(2,0);
-    analogWrite(3,0);
-    delay(100);
-    return;
-  } 
-   
-  //turn left
-  if(option == LEFT){ 
-    digitalWrite(22,HIGH);   
-    digitalWrite(23,LOW); 
-    analogWrite(2,turnpower);       //forward
-    analogWrite(3,turnpower);   //reverse 
-    delay(400);
-  }
-  //turn right
-  else if(option == RIGHT){     
-    digitalWrite(22,LOW);
-    digitalWrite(23,HIGH); 
-    analogWrite(2,turnpower);       //forward
-    analogWrite(3,turnpower);   //reverse 
-    delay(400);  
-  }
-}
-
-
 float getBearing(double lat, double lon, double det_lat, double det_lon){
   // get bearing based on two GPS locations
   double y = sin(det_lon - lon) * cos(det_lat);
@@ -217,123 +323,3 @@ float getHeading(){
   // since we use the z axis for heading, and azimuth is calculated clockwise:
   return -atan2(imu.mag_y(),imu.mag_x());
 }
-
-// For imu heading direction testing
-void adjust( int goal, int displacement){
-  bool searching = true;
-  while( searching ){
-     searching = adjustHelper( goal, displacement);
-  }
-}
-
-
-bool adjustHelper( int goal, int displacement ){
-  /* update the IMU internal values, accessed through methods for each variable */
-  imu.read();
-  /* Calculate the heading using the magnetometer */
-  int heading = getHeading();
-  Serial.print(F("Heading: "));
-  Serial.print(heading);
-  Serial.print(F("; "));
-
-
-  if ( goal == NORTH ) {
-    int left = displacement+344;
-    int right = displacement+15;
-    int turnthreshhold = displacement+180;
-    if ( heading > left || heading < right ){
-        move(STOP);
-        return false;
-    }
-    else if ( heading < turnthreshhold )
-        move(LEFT);
-    else 
-       move(RIGHT); 
-    return true;  
-  }
-
-
-   if ( goal == SOUTH ) {
-    int right = displacement+205;
-    int left = displacement+155;
-    int turnthreshhold = displacement + 180;
-    if ( heading > left && heading < right ){
-        move(STOP);
-        return false;
-    }
-    else if( (heading < turnthreshhold) )
-        move(RIGHT);
-    else 
-       move(LEFT); 
-    return true;  
-  }
-
-
-  if ( goal == EAST ){
-    int left = displacement+65;
-    int right = displacement+115;
-    int turnthreshhold = displacement+270;
-    if ( heading > left && heading < right ){
-        move(STOP);
-        return false;
-    }
-    else if ( (heading < turnthreshhold)  &&  ( heading > left) )  
-      move(LEFT);
-    else 
-      move(RIGHT); 
-    return true;       
-  }
-
-
-  if ( goal == WEST ){
-    int left = displacement+245;
-    int right = displacement+295;
-    int turnthreshhold = displacement+90;      
-    if ( heading > left && heading < right ){
-        return false;
-    }
-    else if ( (heading > turnthreshhold)  &&  ( heading < left) )  
-      move(RIGHT);
-    else 
-      move(LEFT); 
-    return true;       
-  }
-  
-  Serial.println(F(""));
-}
- 
-
-
-
-
-void setPreviousPins( int s0, int s1, int s2, int s3 ){
-    lastsensorpindata0 = s0;
-    lastsensorpindata1 = s1;
-    lastsensorpindata2 = s2;
-    lastsensorpindata3 = s3;  
-}
-
-void reportPressure(){
-  Serial.print("Pressure(Pa):");
-  Serial.print(pressure_sensor.readPressure(), 2);
-  Serial.print(" Temp(f):");
-  Serial.print(pressure_sensor.readTempF(), 2);
-  Serial.println();
-}
-
-void reportGPS(){
-  if (GPS.newNMEAreceived()) {
-    String NMEA = GPS.lastNMEA();
-    Serial.println(NMEA);
-    for(int i=0; i<NMEA.length(); i++)
-      gps.encode(NMEA[i]);
-    Serial.println(gps.satellites.value());
-    Serial.println(gps.location.lat(), 6);
-    Serial.println(gps.location.lng(), 6);
-    if (!GPS.parse(GPS.lastNMEA()))
-      return;
-  }
-}
-
-
-
