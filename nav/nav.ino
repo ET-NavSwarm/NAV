@@ -10,6 +10,8 @@
 #include <clock.h>
 #include <timer.h>
 
+#define DEBUG_INFO false
+
 #define FORWARD 0
 #define BACKWARD 1
 #define STOP 2
@@ -46,15 +48,11 @@ IMU imu;
 
 MPL3115A2 pressure_sensor;
 
-
 // protothread declarations
 static struct pt ptSerial;
-static struct pt ptSensors;
+static struct pt ptSensor;
 static struct pt ptDrive;
-
-
-bool needsLocation = true;
-bool updated = false;
+static struct pt ptDebug;
 
 int sensorpin0 = A0;               
 int sensorpin1 = A1;          
@@ -72,6 +70,17 @@ int previousheading = 0;
 const int power = 80; 
 const int turnpower = 120;
 
+
+// current data values
+float temperature = -1.0;
+float pressure = -1.0;
+double goalLat = -1.0;
+double goalLon = -1.0;
+double currLat = -1.0;
+double currLon = -1.0;
+
+// simple state for serial control
+int forceDirection = FORWARD;
 
 void setup(){
   /* set up motors */
@@ -97,39 +106,35 @@ void setup(){
 
   /* initialize IMU */
   imu.initalize(CALIBRATE_GYRO);
-
-  PT_INIT(&ptSerial);
-  PT_INIT(&ptSensors);
+  
   PT_INIT(&ptDrive);
+  PT_INIT(&ptSerial);
+  PT_INIT(&ptSensor);
+  PT_INIT(&ptDebug);
 }
 
 static PT_THREAD(serialThread(struct pt *pt)){
   PT_BEGIN(pt);
-  static char buff[64];
+  static char buff[65]; // one extra character to always null terminate
 
   while(1){
     PT_WAIT_UNTIL(pt, Serial.available());
-    Serial.readBytes(buff, 64);
+    int numBytes = Serial.readBytes(buff, 64);
     // simple echo for now just to show it works
     Serial.println(buff);
+
+    // change force direction if a direction or "auto" is input
+    if (!strcmp(buff, "stop")) forceDirection = STOP;
+    if (!strcmp(buff, "forward")) forceDirection = FORWARD;
+    if (!strcmp(buff, "backward")) forceDirection = BACKWARD;
+    if (!strcmp(buff, "left")) forceDirection = LEFT;
+    if (!strcmp(buff, "right")) forceDirection = RIGHT;
+    if (!strcmp(buff, "auto")) forceDirection = -1;
+
+    // clear buffer
+    for (int i=0; i<numBytes; i++) buff[i] = '\0';
   }
   
-  PT_END(pt);
-}
-
-static PT_THREAD(sensorThread(struct pt *pt)){
-  static struct timer t;
-  PT_BEGIN(pt);
-
-  timer_set(&t, 0.1*CLOCK_SECOND); // run 10 times per second
-  
-  while(1){
-    PT_WAIT_UNTIL(pt, timer_expired(&t));
-    
-    // read, store, and use sensor values
-    
-    timer_reset(&t);
-  }
   PT_END(pt);
 }
 
@@ -139,7 +144,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
   
   PT_BEGIN(pt);
 
-  timer_set(&t_main, 0.1*CLOCK_SECOND); // run 10 times per second
+  timer_set(&t_main, 0.1*CLOCK_SECOND);
   timer_set(&t_movement, 0); // immediately expire for now
 
   while(1){
@@ -152,11 +157,13 @@ static PT_THREAD(driveThread(struct pt *pt)){
         analogWrite(2,power/2);
         analogWrite(3,power/2);
         timer_set(&t_movement, CLOCK_SECOND);
+        Serial.println("drive -- backward");
         break;
-      case STOP:  // Currently never evoked
+      case STOP:  // Currently only called in testing
         analogWrite(2,0);
         analogWrite(3,0);
-        timer_set(&t_movement, 0.1*CLOCK_SECOND);
+        timer_set(&t_movement, 0.5*CLOCK_SECOND);
+        Serial.println("drive -- stop");
         break;
       case LEFT:
         digitalWrite(22,HIGH);
@@ -164,6 +171,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
         analogWrite(2,turnpower);
         analogWrite(3,turnpower);
         timer_set(&t_movement, 0.4*CLOCK_SECOND);
+        Serial.println("drive -- left");
         break;
       case RIGHT:
         digitalWrite(22,LOW);
@@ -171,6 +179,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
         analogWrite(2,turnpower);
         analogWrite(3,turnpower);
         timer_set(&t_movement, 0.4*CLOCK_SECOND);
+        Serial.println("drive -- right");
         break;
       default:
         // FORWARD
@@ -179,24 +188,67 @@ static PT_THREAD(driveThread(struct pt *pt)){
         analogWrite(2,power);
         analogWrite(3,power);
         // no timer so IR sensors are constantly checked when moving forward
+        Serial.println("drive -- forward");
     }
     timer_reset(&t_main);
   }
   PT_END(pt);
 }
 
+static PT_THREAD(sensorThread(struct pt *pt)){
+  static struct timer t;
+  PT_BEGIN(pt);
 
-int counter = 0;
+  timer_set(&t, 0.2*CLOCK_SECOND);
+  
+  while(1){
+    PT_WAIT_UNTIL(pt, timer_expired(&t));
+    
+    // read, store, and use sensor values
+    pressure = pressure_sensor.readPressure();
+    temperature = pressure_sensor.readTemp();
+
+    // update internal gps values and store what we specifically need.
+    if (GPS.newNMEAreceived()) {
+      String NMEA = GPS.lastNMEA();
+      //Serial.println(NMEA);
+      for(int i=0; i<NMEA.length(); i++)
+        gps.encode(NMEA[i]);
+      currLat = gps.location.lat();
+      currLon = gps.location.lng();
+    }
+
+    // update internal imu values
+    imu.read();
+
+    Serial.println("sensors updated");
+    
+    timer_reset(&t);
+  }
+  PT_END(pt);
+}
+
+static PT_THREAD(debugThread(struct pt *pt)){
+  static struct timer t;
+  PT_BEGIN(pt);
+
+  timer_set(&t, 2*CLOCK_SECOND);
+
+  while(1){
+    PT_WAIT_UNTIL(pt, timer_expired(&t));
+    
+    Serial.println("DEBUG INFO HERE");
+    
+    timer_reset(&t);
+  }
+  PT_END(pt);
+}
 
 void loop(){
-  //update gps
-  //reportGPS();
-  
-  //Serial.println(getHeading());
-
+  driveThread(&ptDrive);
   serialThread(&ptSerial);
   sensorThread(&ptSensor);
-  driveThread(&ptDrive);
+  if(DEBUG_INFO) debugThread(&ptDebug);
 }
 
 void setPreviousPins( int s0, int s1, int s2, int s3 ){
@@ -207,6 +259,11 @@ void setPreviousPins( int s0, int s1, int s2, int s3 ){
 }
 
 int irsensor(){
+  // testing for *very* simple serial control
+  if (forceDirection != -1) {
+    return forceDirection;
+  }
+  
   //Distance (cm) = 4800/(SensorValue - 20)
   int distance0 = analogRead(sensorpin0);
   int distance1 = analogRead(sensorpin1); 
@@ -265,26 +322,4 @@ float getBearing(double lat, double lon, double det_lat, double det_lon){
 float getHeading(){
   // since we use the z axis for heading, and azimuth is calculated clockwise:
   return -atan2(imu.mag_y(),imu.mag_x());
-}
-
-void reportPressure(){
-  Serial.print("Pressure(Pa):");
-  Serial.print(pressure_sensor.readPressure(), 2);
-  Serial.print(" Temp(f):");
-  Serial.print(pressure_sensor.readTempF(), 2);
-  Serial.println();
-}
-
-void reportGPS(){
-  if (GPS.newNMEAreceived()) {
-    String NMEA = GPS.lastNMEA();
-    Serial.println(NMEA);
-    for(int i=0; i<NMEA.length(); i++)
-      gps.encode(NMEA[i]);
-    Serial.println(gps.satellites.value());
-    Serial.println(gps.location.lat(), 6);
-    Serial.println(gps.location.lng(), 6);
-    if (!GPS.parse(GPS.lastNMEA()))
-      return;
-  }
 }
