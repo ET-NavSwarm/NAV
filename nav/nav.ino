@@ -1,88 +1,83 @@
 #include <Adafruit_GPS.h>
-#include <Wire.h>
-#include <Adafruit_Sensor.h>
-#include <SoftwareSerial.h>
 #include <SparkFunMPL3115A2.h>
 #include <IMU.h>
 #include <math.h>
-#include "TinyGPS++.h"
 #include <pt.h>
-#include <clock.h>
 #include <timer.h>
 
-#define DEBUG_INFO false
+/* ##### +Behavior changes ##### */
+// Set CALIBRATE_GYRO to true or false to enable or disable the gyroscope calibration step
+// This step takes many samples on initialization and averages them to zero out
+#define CALIBRATE_GYRO false
 
+// simple state for serial control
+int forceDirection = 0;
+
+//This value is the power sent to the robot.
+//0 is no power and 255 is max power. 
+#define POWER 80
+#define TURNPOWER 120
+/* ##### -Behavior changes ##### */
+
+/* ##### +Debugging ##### */
+// frequency to send large amount of debug information on Serial
+// set to 0 to disable
+#define DEBUG_INFO 0
+
+// set any to false to skip that sensor. useful for debugging individual sensors
+#define USE_GPS true
+#define USE_IMU true
+#define USE_PRESSURE true
+
+// echoes raw NMEA data to Serial
+#define ECHO_GPS false
+// use with ECHO_GPS to check antenna status. (you won't see anything without ECHO_GPS)
+// look for $PGTOP,11,X*## in the Serial Monitor. X=3: external antenna, X=2: internal antenna
+#define DEBUG_ANTENNA false
+
+// Causes a message to be sent on Serial whenever a thread is yielded to
+#define DEBUG_THREADS false
+/* ##### -Debugging ##### */
+
+/* ##### +Constants ##### */
+// directions passed back from irsensor()
 #define FORWARD 0
 #define BACKWARD 1
 #define STOP 2
 #define LEFT 3
 #define RIGHT 4
+/* ##### -Constants ##### */
 
-#define NORTH 0
-#define EAST 1
-#define SOUTH 2
-#define WEST 3
-
-#define EMPTY 0
-#define OCCUPIED 1
-#define BOT 2
-#define GOAL 3
-
-
-// Set GPSECHO to 'false' to turn off echoing the GPS data to the Serial console
-// Set to 'true' if you want to debug and listen to the raw GPS sentences
-#define GPSECHO  true
-// Set CALIBRATE_GYRO to true or false to enable or disable the gyroscope calibration step
-// This step takes many samples on initialization and averages them to zero out
-#define CALIBRATE_GYRO true
-boolean usingInterrupt = false;
-void useInterrupt(boolean); // Func prototype keeps Arduino 0023 happy
-
-
+/* ##### +Declarations ##### */
+// Sensors
 Adafruit_GPS GPS(&Serial1);
-TinyGPSPlus gps;
-
-float seaLevelPressure = SENSORS_PRESSURE_SEALEVELHPA;
-
 IMU imu;
-
 MPL3115A2 pressure_sensor;
 
-// protothread declarations
+// protothreads
 static struct pt ptSerial;
 static struct pt ptSensor;
 static struct pt ptDrive;
 static struct pt ptDebug;
 
-int sensorpin0 = A0;               
-int sensorpin1 = A1;          
-int sensorpin2 = A2;
-int sensorpin3 = A3; 
-
+// used in irsensor()
 int lastsensorpindata0 = 0;
 int lastsensorpindata1 = 0;
 int lastsensorpindata2 = 0;
 int lastsensorpindata3 = 0;
-int previousheading = 0;
-
-//This value is the power sent to the robot.
-//0 is no power and 255 is max power. 
-const int power = 80; 
-const int turnpower = 120;
-
 
 // current data values
-float temperature = -1.0;
-float pressure = -1.0;
-double goalLat = -1.0;
-double goalLon = -1.0;
-double currLat = -1.0;
-double currLon = -1.0;
-
-// simple state for serial control
-int forceDirection = FORWARD;
+float heading = -1.0;
+float currAltitude = -1.0;
+float goalLat = -1.0;
+float goalLon = -1.0;
+float currLat = -1.0;
+float currLon = -1.0;
+/* ##### -Declarations ##### */
 
 void setup(){
+  Serial.begin(9600);               // starts the serial monitor
+  
   /* set up motors */
   pinMode(2,OUTPUT);                // PWM pin 1 from motor driver
   pinMode(3,OUTPUT);                // PWM pin 2 from motor driver
@@ -90,28 +85,58 @@ void setup(){
   pinMode(23,OUTPUT);               // Direction pin 2 from motor driver
   digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
   digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
-  Serial.begin(9600);               // starts the serial monitor
 
-  /* initialize pressure sensor */
-  Wire.begin();
-  pressure_sensor.begin();
-  pressure_sensor.setModeBarometer();
-  pressure_sensor.setOversampleRate(7);
-  pressure_sensor.enableEventFlags();
+  #if USE_PRESSURE
+    /* initialize pressure sensor */
+    Wire.begin(); // join ic2 bus
+    pressure_sensor.begin();
+    pressure_sensor.setModeAltimeter();
+    pressure_sensor.setOversampleRate(7);
+    pressure_sensor.enableEventFlags();
+  #endif
 
-  /* initialize GPS */
-  GPS.begin(9600);
-  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
-  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);
+  #if USE_IMU
+    /* initialize IMU */
+    imu.initalize(CALIBRATE_GYRO);
+  #endif
 
-  /* initialize IMU */
-  imu.initalize(CALIBRATE_GYRO);
-  
+  // initialize threads
   PT_INIT(&ptDrive);
   PT_INIT(&ptSerial);
   PT_INIT(&ptSensor);
   PT_INIT(&ptDebug);
+
+  #if USE_GPS
+    /* initialize GPS */
+    GPS.begin(9600);
+    GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
+    GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);
+    GPS.sendCommand(PMTK_API_SET_FIX_CTL_1HZ);
+    #if DEBUG_ANTENNA
+      GPS.sendCommand(PGCMD_ANTENNA);
+    #else
+      GPS.sendCommand(PGCMD_NOANTENNA);
+    #endif
+    
+    // initialization of interrupt we'll use to babysit the gps
+    // this shares the millis() interrupt, so it runs once every millisecond (as such it needs to be very short)
+    OCR0A = 0xAF;
+    TIMSK0 |= _BV(OCIE0A);
+  #endif
 }
+
+#if USE_GPS
+  SIGNAL(TIMER0_COMPA_vect) {
+    // this stores the read byte internally in the GPS
+    // when a string is eventually complete, GPS.newNMEAreceived() will be true (but only until it is read)
+    #if ECHO_GPS
+      char c = GPS.read();
+      if(c) UDR0 = c;
+    #else
+      GPS.read();
+    #endif
+  }
+#endif
 
 static PT_THREAD(serialThread(struct pt *pt)){
   PT_BEGIN(pt);
@@ -120,8 +145,11 @@ static PT_THREAD(serialThread(struct pt *pt)){
   while(1){
     PT_WAIT_UNTIL(pt, Serial.available());
     int numBytes = Serial.readBytes(buff, 64);
-    // simple echo for now just to show it works
-    Serial.println(buff);
+
+    #if DEBUG_THREADS
+      // simple echo for now just to show it works
+      Serial.println(buff);
+    #endif
 
     // change force direction if a direction or "auto" is input
     if (!strcmp(buff, "stop")) forceDirection = STOP;
@@ -154,41 +182,51 @@ static PT_THREAD(driveThread(struct pt *pt)){
       case BACKWARD:
         digitalWrite(22,LOW);            // HIGH for forward LOW for reverse
         digitalWrite(23,LOW);            // HIGH for forward LOW for reverse
-        analogWrite(2,power/2);
-        analogWrite(3,power/2);
+        analogWrite(2,POWER/2);
+        analogWrite(3,POWER/2);
         timer_set(&t_movement, CLOCK_SECOND);
-        Serial.println("drive -- backward");
+        #if DEBUG_THREADS
+          Serial.println("drive -- backward");
+        #endif
         break;
       case STOP:  // Currently only called in testing
         analogWrite(2,0);
         analogWrite(3,0);
         timer_set(&t_movement, 0.5*CLOCK_SECOND);
-        Serial.println("drive -- stop");
+        #if DEBUG_THREADS
+          Serial.println("drive -- stop");
+        #endif
         break;
       case LEFT:
         digitalWrite(22,HIGH);
         digitalWrite(23,LOW);
-        analogWrite(2,turnpower);
-        analogWrite(3,turnpower);
+        analogWrite(2,TURNPOWER);
+        analogWrite(3,TURNPOWER);
         timer_set(&t_movement, 0.4*CLOCK_SECOND);
-        Serial.println("drive -- left");
+        #if DEBUG_THREADS
+          Serial.println("drive -- left");
+        #endif
         break;
       case RIGHT:
         digitalWrite(22,LOW);
         digitalWrite(23,HIGH);
-        analogWrite(2,turnpower);
-        analogWrite(3,turnpower);
+        analogWrite(2,TURNPOWER);
+        analogWrite(3,TURNPOWER);
         timer_set(&t_movement, 0.4*CLOCK_SECOND);
-        Serial.println("drive -- right");
+        #if DEBUG_THREADS
+          Serial.println("drive -- right");
+        #endif
         break;
       default:
         // FORWARD
         digitalWrite(22,HIGH);
         digitalWrite(23,HIGH);
-        analogWrite(2,power);
-        analogWrite(3,power);
+        analogWrite(2,POWER);
+        analogWrite(3,POWER);
         // no timer so IR sensors are constantly checked when moving forward
-        Serial.println("drive -- forward");
+        #if DEBUG_THREADS
+          Serial.println("drive -- forward");
+        #endif
     }
     timer_reset(&t_main);
   }
@@ -204,24 +242,32 @@ static PT_THREAD(sensorThread(struct pt *pt)){
   while(1){
     PT_WAIT_UNTIL(pt, timer_expired(&t));
     
-    // read, store, and use sensor values
-    pressure = pressure_sensor.readPressure();
-    temperature = pressure_sensor.readTemp();
+    /* read, store, and use sensor values */
+    
+    #if USE_PRESSURE
+      // store current altitude
+      currAltitude = pressure_sensor.readAltitude(); // meters above sea level
+    #endif
 
-    // update internal gps values and store what we specifically need.
-    if (GPS.newNMEAreceived()) {
-      String NMEA = GPS.lastNMEA();
-      //Serial.println(NMEA);
-      for(int i=0; i<NMEA.length(); i++)
-        gps.encode(NMEA[i]);
-      currLat = gps.location.lat();
-      currLon = gps.location.lng();
-    }
+    #if USE_GPS
+      // update internal gps values and store what we specifically need.
+      if (GPS.newNMEAreceived()) {
+        GPS.parse(GPS.lastNMEA());
+        if (GPS.fix) {
+          currLat = GPS.latitudeDegrees;
+          currLon = GPS.longitudeDegrees;
+        }
+      }
+    #endif
 
-    // update internal imu values
-    imu.read();
+    #if USE_IMU
+      // update internal imu values
+      imu.read();
+    #endif
 
-    Serial.println("sensors updated");
+    #if DEBUG_THREADS
+      Serial.println("sensors updated");
+    #endif
     
     timer_reset(&t);
   }
@@ -232,12 +278,22 @@ static PT_THREAD(debugThread(struct pt *pt)){
   static struct timer t;
   PT_BEGIN(pt);
 
-  timer_set(&t, 2*CLOCK_SECOND);
+  timer_set(&t, DEBUG_INFO*CLOCK_SECOND);
 
   while(1){
     PT_WAIT_UNTIL(pt, timer_expired(&t));
     
-    Serial.println("DEBUG INFO HERE");
+      Serial.print("Fix: "); Serial.print((int)GPS.fix);
+      Serial.print(" quality: "); Serial.println((int)GPS.fixquality);
+      Serial.print("Satellites: "); Serial.println((int)GPS.satellites);
+      if (GPS.fix) {
+        Serial.print("Location ");
+        Serial.print(GPS.latitudeDegrees, 4);
+        Serial.print(", "); 
+        Serial.println(GPS.longitudeDegrees, 4);
+      } else {
+        Serial.println("no fix yet");
+      }
     
     timer_reset(&t);
   }
@@ -248,7 +304,9 @@ void loop(){
   driveThread(&ptDrive);
   serialThread(&ptSerial);
   sensorThread(&ptSensor);
-  if(DEBUG_INFO) debugThread(&ptDebug);
+  #if DEBUG_INFO > 0
+    debugThread(&ptDebug);
+  #endif
 }
 
 void setPreviousPins( int s0, int s1, int s2, int s3 ){
@@ -265,10 +323,10 @@ int irsensor(){
   }
   
   //Distance (cm) = 4800/(SensorValue - 20)
-  int distance0 = analogRead(sensorpin0);
-  int distance1 = analogRead(sensorpin1); 
-  int distance2 = analogRead(sensorpin2);
-  int distance3 = analogRead(sensorpin3);
+  int distance0 = analogRead(A0);
+  int distance1 = analogRead(A1); 
+  int distance2 = analogRead(A2);
+  int distance3 = analogRead(A3);
   
   // something is way to close to the front of bot
   if ( distance0 > 300 || distance1 > 300  ){ 
@@ -311,10 +369,14 @@ int irsensor(){
   return FORWARD;
 }
 
-float getBearing(double lat, double lon, double det_lat, double det_lon){
+float getBearingTo(float det_lat, float det_lon){
+  return calcBearing(currLat, currLon, det_lat, det_lon);
+}
+
+float calcBearing(float start_lat, float start_lon, float det_lat, float det_lon){
   // get bearing based on two GPS locations
-  double y = sin(det_lon - lon) * cos(det_lat);
-  double x = cos(lat)*sin(det_lat) - sin(lat)*cos(det_lat)*cos(det_lon - lon);
+  float y = sin(det_lon - start_lon) * cos(det_lat);
+  float x = cos(start_lat)*sin(det_lat) - sin(start_lat)*cos(det_lat)*cos(det_lon - start_lon);
   return atan2(y, x);
 }
 

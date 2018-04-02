@@ -13,5 +13,4 @@ Libraries used:
 * Adafruit Sensor 1.0.2
 * IMU (library written and shared with us by Evan Grissino)
 * Sparkfun MPL3115A2
-* TinyGPS++ http://arduiniana.org/libraries/tinygpsplus/
 * Protothread https://github.com/fernandomalmeida/protothreads-arduino
