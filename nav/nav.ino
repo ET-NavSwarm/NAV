@@ -5,7 +5,6 @@
 #include <SparkFunMPL3115A2.h>
 #include <IMU.h>
 #include <math.h>
-#include "TinyGPS++.h"
 #include <pt.h>
 #include <clock.h>
 #include <timer.h>
@@ -40,7 +39,6 @@ void useInterrupt(boolean); // Func prototype keeps Arduino 0023 happy
 
 
 Adafruit_GPS GPS(&Serial1);
-TinyGPSPlus gps;
 
 float seaLevelPressure = SENSORS_PRESSURE_SEALEVELHPA;
 
@@ -111,6 +109,17 @@ void setup(){
   PT_INIT(&ptSerial);
   PT_INIT(&ptSensor);
   PT_INIT(&ptDebug);
+
+  // initialization of interrupt we'll use to babysit the gps
+  // this shares the millis() interrupt, so it runs once every millisecond (as such it needs to be very short)
+  OCR0A = 0xAF;
+  TIMSK0 |= _BV(OCIE0A);
+}
+
+SIGNAL(TIMER0_COMPA_vect) {
+  // this stores the read byte internall in the GPS
+  // when a string is eventually complete, GPS.newNMEAreceived() will be true (but only until it is read)
+  GPS.read();
 }
 
 static PT_THREAD(serialThread(struct pt *pt)){
@@ -210,12 +219,9 @@ static PT_THREAD(sensorThread(struct pt *pt)){
 
     // update internal gps values and store what we specifically need.
     if (GPS.newNMEAreceived()) {
-      String NMEA = GPS.lastNMEA();
-      //Serial.println(NMEA);
-      for(int i=0; i<NMEA.length(); i++)
-        gps.encode(NMEA[i]);
-      currLat = gps.location.lat();
-      currLon = gps.location.lng();
+      GPS.parse(GPS.lastNMEA());
+      currLat = GPS.latitude;
+      currLon = GPS.longitude;
     }
 
     // update internal imu values
