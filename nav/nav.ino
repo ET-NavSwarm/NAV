@@ -9,31 +9,25 @@
 #include <clock.h>
 #include <timer.h>
 
+// if true debug information will be periodically sent on Serial
 #define DEBUG_INFO false
 
+// set any to false to skip that sensor. useful for debugging individual sensors
+#define ENABLE_GPS true
+#define ENABLE_IMU true
+#define ENABLE_PRESSURE true
+
+// directions passed back from irsensor()
 #define FORWARD 0
 #define BACKWARD 1
 #define STOP 2
 #define LEFT 3
 #define RIGHT 4
 
-#define NORTH 0
-#define EAST 1
-#define SOUTH 2
-#define WEST 3
-
-#define EMPTY 0
-#define OCCUPIED 1
-#define BOT 2
-#define GOAL 3
-
-
-// Set GPSECHO to 'false' to turn off echoing the GPS data to the Serial console
-// Set to 'true' if you want to debug and listen to the raw GPS sentences
-#define GPSECHO  true
 // Set CALIBRATE_GYRO to true or false to enable or disable the gyroscope calibration step
 // This step takes many samples on initialization and averages them to zero out
-#define CALIBRATE_GYRO true
+#define CALIBRATE_GYRO false
+
 boolean usingInterrupt = false;
 void useInterrupt(boolean); // Func prototype keeps Arduino 0023 happy
 
@@ -81,6 +75,8 @@ double currLon = -1.0;
 int forceDirection = FORWARD;
 
 void setup(){
+  Serial.begin(9600);               // starts the serial monitor
+  
   /* set up motors */
   pinMode(2,OUTPUT);                // PWM pin 1 from motor driver
   pinMode(3,OUTPUT);                // PWM pin 2 from motor driver
@@ -88,39 +84,48 @@ void setup(){
   pinMode(23,OUTPUT);               // Direction pin 2 from motor driver
   digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
   digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
-  Serial.begin(9600);               // starts the serial monitor
 
+  #if USE_PRESSURE
   /* initialize pressure sensor */
   Wire.begin();
   pressure_sensor.begin();
   pressure_sensor.setModeBarometer();
   pressure_sensor.setOversampleRate(7);
   pressure_sensor.enableEventFlags();
+  #endif
 
+  #if USE_GPS
   /* initialize GPS */
   GPS.begin(9600);
   GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
   GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);
+  #endif
 
+  #if USE_IMU
   /* initialize IMU */
-  imu.initalize(CALIBRATE_GYRO);
+  // imu.initalize(CALIBRATE_GYRO);
+  #endif
   
   PT_INIT(&ptDrive);
   PT_INIT(&ptSerial);
   PT_INIT(&ptSensor);
   PT_INIT(&ptDebug);
 
+  #if USE_GPS
   // initialization of interrupt we'll use to babysit the gps
   // this shares the millis() interrupt, so it runs once every millisecond (as such it needs to be very short)
   OCR0A = 0xAF;
   TIMSK0 |= _BV(OCIE0A);
+  #endif
 }
 
+#if(USE_GPS == true)
 SIGNAL(TIMER0_COMPA_vect) {
   // this stores the read byte internall in the GPS
   // when a string is eventually complete, GPS.newNMEAreceived() will be true (but only until it is read)
   GPS.read();
 }
+#endif
 
 static PT_THREAD(serialThread(struct pt *pt)){
   PT_BEGIN(pt);
@@ -214,18 +219,24 @@ static PT_THREAD(sensorThread(struct pt *pt)){
     PT_WAIT_UNTIL(pt, timer_expired(&t));
     
     // read, store, and use sensor values
+    #if USE_PRESSURE
     pressure = pressure_sensor.readPressure();
     temperature = pressure_sensor.readTemp();
+    #endif
 
+    #if USE_GPS
     // update internal gps values and store what we specifically need.
     if (GPS.newNMEAreceived()) {
       GPS.parse(GPS.lastNMEA());
       currLat = GPS.latitude;
       currLon = GPS.longitude;
     }
+    #endif
 
+    #if USE_IMU
     // update internal imu values
     imu.read();
+    #endif
 
     Serial.println("sensors updated");
     
