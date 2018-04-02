@@ -8,9 +8,8 @@ Features:
 * navigation to gps waypoints
 * transitioning between behavior states
 
-Libraries used:
+Non-default Libraries Used:
 * Adafruit GPS Library
-* Adafruit Sensor 1.0.2
 * IMU (library written and shared with us by Evan Grissino)
 * Sparkfun MPL3115A2
 * Protothread https://github.com/fernandomalmeida/protothreads-arduino
