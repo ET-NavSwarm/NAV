@@ -383,10 +383,14 @@ int irsensor(){
   return FORWARD;
 }
 
-float getBearing(double lat, double lon, double det_lat, double det_lon){
+float getBearingTo(float det_lat, float det_lon){
+  return calcBearing(curLat, curLon, det_lat, det_lon);
+}
+
+float calcBearing(float start_lat, float start_lon, float det_lat, float det_lon){
   // get bearing based on two GPS locations
-  double y = sin(det_lon - lon) * cos(det_lat);
-  double x = cos(lat)*sin(det_lat) - sin(lat)*cos(det_lat)*cos(det_lon - lon);
+  float y = sin(det_lon - start_lon) * cos(det_lat);
+  float x = cos(start_lat)*sin(det_lat) - sin(start_lat)*cos(det_lat)*cos(det_lon - start_lon);
   return atan2(y, x);
 }
 
