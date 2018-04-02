@@ -16,6 +16,10 @@
 /* ##### -Behavior changes ##### */
 
 /* ##### +Debugging ##### */
+// frequency to send large amount of debug information on Serial
+// set to 0 to disable
+#define DEBUG_INFO 0
+
 // set any to false to skip that sensor. useful for debugging individual sensors
 #define USE_GPS true
 #define USE_IMU true
@@ -23,12 +27,12 @@
 
 // echoes raw NMEA data to Serial
 #define ECHO_GPS false
+// use with ECHO_GPS to check antenna status. (you won't see anything without ECHO_GPS)
+// look for $PGTOP,11,x... in the Serial Monitor. x=3: external antenna, x=2: internal antenna
+#define DEBUG_ANTENNA false
 
 // Causes a message to be sent on Serial whenever a thread is yielded to
 #define DEBUG_THREADS false
-
-// if true debug information will be periodically sent on Serial
-#define DEBUG_INFO false
 /* ##### -Debugging ##### */
 
 /* ##### +Constants ##### */
@@ -106,24 +110,29 @@ void setup(){
   pressure_sensor.enableEventFlags();
   #endif
 
-  #if USE_GPS
-  /* initialize GPS */
-  GPS.begin(9600);
-  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
-  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);
-  #endif
-
   #if USE_IMU
   /* initialize IMU */
-  // imu.initalize(CALIBRATE_GYRO);
+  imu.initalize(CALIBRATE_GYRO);
   #endif
-  
+
+  // initialize threads
   PT_INIT(&ptDrive);
   PT_INIT(&ptSerial);
   PT_INIT(&ptSensor);
   PT_INIT(&ptDebug);
 
   #if USE_GPS
+  /* initialize GPS */
+  GPS.begin(9600);
+  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
+  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);
+  GPS.sendCommand(PMTK_API_SET_FIX_CTL_1HZ);
+  #if DEBUG_ANTENNA
+    GPS.sendCommand(PGCMD_ANTENNA);
+  #else
+    GPS.sendCommand(PGCMD_NOANTENNA);
+  #endif
+  
   // initialization of interrupt we'll use to babysit the gps
   // this shares the millis() interrupt, so it runs once every millisecond (as such it needs to be very short)
   OCR0A = 0xAF;
@@ -258,16 +267,9 @@ static PT_THREAD(sensorThread(struct pt *pt)){
     // update internal gps values and store what we specifically need.
     if (GPS.newNMEAreceived()) {
       GPS.parse(GPS.lastNMEA());
-      currLat = GPS.latitude;
-      currLon = GPS.longitude;
-      Serial.print("Fix: "); Serial.print((int)GPS.fix);
-      Serial.print(" quality: "); Serial.println((int)GPS.fixquality); 
       if (GPS.fix) {
-        Serial.print("Location: ");
-        Serial.print(GPS.latitude, 4); Serial.print(GPS.lat);
-        Serial.print(", "); 
-        Serial.print(GPS.longitude, 4); Serial.println(GPS.lon);
-        Serial.print("Satellites: "); Serial.println((int)GPS.satellites);
+        currLat = GPS.latitudeDegrees;
+        currLon = GPS.longitudeDegrees;
       }
     }
     #endif
@@ -290,12 +292,22 @@ static PT_THREAD(debugThread(struct pt *pt)){
   static struct timer t;
   PT_BEGIN(pt);
 
-  timer_set(&t, 2*CLOCK_SECOND);
+  timer_set(&t, DEBUG_INFO*CLOCK_SECOND);
 
   while(1){
     PT_WAIT_UNTIL(pt, timer_expired(&t));
     
-    Serial.println("DEBUG INFO HERE");
+      Serial.print("Fix: "); Serial.print((int)GPS.fix);
+      Serial.print(" quality: "); Serial.println((int)GPS.fixquality);
+      Serial.print("Satellites: "); Serial.println((int)GPS.satellites);
+      if (GPS.fix) {
+        Serial.print("Location ");
+        Serial.print(GPS.latitudeDegrees, 4);
+        Serial.print(", "); 
+        Serial.println(GPS.longitudeDegrees, 4);
+      } else {
+        Serial.println("no fix yet");
+      }
     
     timer_reset(&t);
   }
@@ -306,7 +318,9 @@ void loop(){
   driveThread(&ptDrive);
   serialThread(&ptSerial);
   sensorThread(&ptSensor);
-  if(DEBUG_INFO) debugThread(&ptDebug);
+  #if DEBUG_INFO > 0
+    debugThread(&ptDebug);
+  #endif
 }
 
 void setPreviousPins( int s0, int s1, int s2, int s3 ){
