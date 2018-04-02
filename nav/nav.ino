@@ -9,24 +9,36 @@
 #include <clock.h>
 #include <timer.h>
 
+/* ##### +Behavior changes ##### */
+// Set CALIBRATE_GYRO to true or false to enable or disable the gyroscope calibration step
+// This step takes many samples on initialization and averages them to zero out
+#define CALIBRATE_GYRO false
+/* ##### -Behavior changes ##### */
+
+/* ##### +Debugging ##### */
+// set any to false to skip that sensor. useful for debugging individual sensors
+#define USE_GPS true
+#define USE_IMU true
+#define USE_PRESSURE true
+
+// echoes raw NMEA data to Serial
+#define ECHO_GPS false
+
+// Causes a message to be sent on Serial whenever a thread is yielded to
+#define DEBUG_THREADS false
+
 // if true debug information will be periodically sent on Serial
 #define DEBUG_INFO false
+/* ##### -Debugging ##### */
 
-// set any to false to skip that sensor. useful for debugging individual sensors
-#define ENABLE_GPS true
-#define ENABLE_IMU true
-#define ENABLE_PRESSURE true
-
+/* ##### +Constants ##### */
 // directions passed back from irsensor()
 #define FORWARD 0
 #define BACKWARD 1
 #define STOP 2
 #define LEFT 3
 #define RIGHT 4
-
-// Set CALIBRATE_GYRO to true or false to enable or disable the gyroscope calibration step
-// This step takes many samples on initialization and averages them to zero out
-#define CALIBRATE_GYRO false
+/* ##### -Constants ##### */
 
 boolean usingInterrupt = false;
 void useInterrupt(boolean); // Func prototype keeps Arduino 0023 happy
@@ -119,11 +131,16 @@ void setup(){
   #endif
 }
 
-#if(USE_GPS == true)
+#if USE_GPS
 SIGNAL(TIMER0_COMPA_vect) {
   // this stores the read byte internall in the GPS
   // when a string is eventually complete, GPS.newNMEAreceived() will be true (but only until it is read)
-  GPS.read();
+  #if ECHO_GPS
+    char c = GPS.read();
+    if(c) UDR0 = c;
+  #else
+    GPS.read();
+  #endif
 }
 #endif
 
@@ -134,8 +151,11 @@ static PT_THREAD(serialThread(struct pt *pt)){
   while(1){
     PT_WAIT_UNTIL(pt, Serial.available());
     int numBytes = Serial.readBytes(buff, 64);
+
+    #if DEBUG_THREADS
     // simple echo for now just to show it works
     Serial.println(buff);
+    #endif
 
     // change force direction if a direction or "auto" is input
     if (!strcmp(buff, "stop")) forceDirection = STOP;
@@ -171,13 +191,17 @@ static PT_THREAD(driveThread(struct pt *pt)){
         analogWrite(2,power/2);
         analogWrite(3,power/2);
         timer_set(&t_movement, CLOCK_SECOND);
+        #if DEBUG_THREADS
         Serial.println("drive -- backward");
+        #endif
         break;
       case STOP:  // Currently only called in testing
         analogWrite(2,0);
         analogWrite(3,0);
         timer_set(&t_movement, 0.5*CLOCK_SECOND);
+        #if DEBUG_THREADS
         Serial.println("drive -- stop");
+        #endif
         break;
       case LEFT:
         digitalWrite(22,HIGH);
@@ -185,7 +209,9 @@ static PT_THREAD(driveThread(struct pt *pt)){
         analogWrite(2,turnpower);
         analogWrite(3,turnpower);
         timer_set(&t_movement, 0.4*CLOCK_SECOND);
+        #if DEBUG_THREADS
         Serial.println("drive -- left");
+        #endif
         break;
       case RIGHT:
         digitalWrite(22,LOW);
@@ -193,7 +219,9 @@ static PT_THREAD(driveThread(struct pt *pt)){
         analogWrite(2,turnpower);
         analogWrite(3,turnpower);
         timer_set(&t_movement, 0.4*CLOCK_SECOND);
+        #if DEBUG_THREADS
         Serial.println("drive -- right");
+        #endif
         break;
       default:
         // FORWARD
@@ -202,7 +230,9 @@ static PT_THREAD(driveThread(struct pt *pt)){
         analogWrite(2,power);
         analogWrite(3,power);
         // no timer so IR sensors are constantly checked when moving forward
+        #if DEBUG_THREADS
         Serial.println("drive -- forward");
+        #endif
     }
     timer_reset(&t_main);
   }
@@ -230,6 +260,15 @@ static PT_THREAD(sensorThread(struct pt *pt)){
       GPS.parse(GPS.lastNMEA());
       currLat = GPS.latitude;
       currLon = GPS.longitude;
+      Serial.print("Fix: "); Serial.print((int)GPS.fix);
+      Serial.print(" quality: "); Serial.println((int)GPS.fixquality); 
+      if (GPS.fix) {
+        Serial.print("Location: ");
+        Serial.print(GPS.latitude, 4); Serial.print(GPS.lat);
+        Serial.print(", "); 
+        Serial.print(GPS.longitude, 4); Serial.println(GPS.lon);
+        Serial.print("Satellites: "); Serial.println((int)GPS.satellites);
+      }
     }
     #endif
 
@@ -238,7 +277,9 @@ static PT_THREAD(sensorThread(struct pt *pt)){
     imu.read();
     #endif
 
+    #if DEBUG_THREADS
     Serial.println("sensors updated");
+    #endif
     
     timer_reset(&t);
   }
