@@ -384,7 +384,8 @@ int irsensor(){
 }
 
 float getBearingTo(float det_lat, float det_lon){
-  return calcBearing(curLat, curLon, det_lat, det_lon);
+  // convenience function since we will often get bearing starting at current location
+  return calcBearing(currLat, currLon, det_lat, det_lon);
 }
 
 float calcBearing(float start_lat, float start_lon, float det_lat, float det_lon){
