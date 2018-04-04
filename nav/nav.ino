@@ -2,13 +2,14 @@
 #include <SparkFunMPL3115A2.h>
 #include <IMU.h>
 #include <math.h>
+#include <MatrixMath.h>
 #include <pt.h>
 #include <timer.h>
 
 /* ##### +Behavior changes ##### */
 // Set CALIBRATE_GYRO to true or false to enable or disable the gyroscope calibration step
 // This step takes many samples on initialization and averages them to zero out
-#define CALIBRATE_GYRO false
+#define CALIBRATE_GYRO true
 
 // simple state for serial control
 int forceDirection = 0;
@@ -17,17 +18,20 @@ int forceDirection = 0;
 //0 is no power and 255 is max power. 
 #define POWER 80
 #define TURNPOWER 120
+
+//This is the rate the bot will adjust toward the goal * CLOCK_SECOND
+int adjustRate = 1;
 /* ##### -Behavior changes ##### */
 
 /* ##### +Debugging ##### */
 // frequency to send large amount of debug information on Serial
 // set to 0 to disable
-#define DEBUG_INFO 0
+#define DEBUG_INFO 1
 
 // set any to false to skip that sensor. useful for debugging individual sensors
-#define USE_GPS true
+#define USE_GPS false
 #define USE_IMU true
-#define USE_PRESSURE true
+#define USE_PRESSURE false
 
 // echoes raw NMEA data to Serial
 #define ECHO_GPS false
@@ -59,6 +63,7 @@ static struct pt ptSerial;
 static struct pt ptSensor;
 static struct pt ptDrive;
 static struct pt ptDebug;
+static struct pt ptAdjust;
 
 // used in irsensor()
 int lastsensorpindata0 = 0;
@@ -105,6 +110,7 @@ void setup(){
   PT_INIT(&ptSerial);
   PT_INIT(&ptSensor);
   PT_INIT(&ptDebug);
+  PT_INIT(&ptAdjust);
 
   #if USE_GPS
     /* initialize GPS */
@@ -282,7 +288,8 @@ static PT_THREAD(debugThread(struct pt *pt)){
 
   while(1){
     PT_WAIT_UNTIL(pt, timer_expired(&t));
-    
+
+    #if USE_GPS
       Serial.print("Fix: "); Serial.print((int)GPS.fix);
       Serial.print(" quality: "); Serial.println((int)GPS.fixquality);
       Serial.print("Satellites: "); Serial.println((int)GPS.satellites);
@@ -294,8 +301,28 @@ static PT_THREAD(debugThread(struct pt *pt)){
       } else {
         Serial.println("no fix yet");
       }
+    #endif
+
+    #if USE_IMU
+      Serial.print("Heading: ");
+      Serial.println(getHeading());
+    #endif
     
     timer_reset(&t);
+  }
+  PT_END(pt);
+}
+
+static PT_THREAD(adjustThread(struct pt *pt)){
+  static struct timer t;
+  PT_BEGIN(pt);
+
+  timer_set(&t, adjustRate*CLOCK_SECOND);
+
+  while(1){
+    PT_WAIT_UNTIL(pt, timer_expired(&t));
+    adjustGoal();
+    timer_set(&t, adjustRate*CLOCK_SECOND);
   }
   PT_END(pt);
 }
@@ -304,6 +331,7 @@ void loop(){
   driveThread(&ptDrive);
   serialThread(&ptSerial);
   sensorThread(&ptSensor);
+  adjustThread(&ptAdjust);
   #if DEBUG_INFO > 0
     debugThread(&ptDebug);
   #endif
@@ -331,6 +359,7 @@ int irsensor(){
   // something is way to close to the front of bot
   if ( distance0 > 300 || distance1 > 300  ){ 
     if ( lastsensorpindata0 > 300 || lastsensorpindata1 > 300 ){
+      adjustRate = 5;
       setPreviousPins( 0, 0, 0, 0);
       return BACKWARD;
     }
@@ -343,6 +372,7 @@ int irsensor(){
   // obstacle in front
   else if ( distance0 > 210 || distance1 > 210 ) {
     if ( lastsensorpindata0 > 210 || lastsensorpindata1 > 210 ){
+      adjustRate = 5;
       setPreviousPins( 0, 0, 0, 0); 
       if ( distance2 > distance3 ){
         return RIGHT;
@@ -356,6 +386,7 @@ int irsensor(){
  // obstacle to the sides
   else if ( distance2 > 300 || distance3 > 300 ) {
     if ( lastsensorpindata2 > 300 || lastsensorpindata3 > 300 ){
+      adjustRate = 5;
       setPreviousPins( 0, 0, 0, 0); 
       if ( distance2 > distance3 ){
         return RIGHT;
@@ -366,21 +397,74 @@ int irsensor(){
     } 
   }
   setPreviousPins( distance0, distance1, distance2, distance3);
+  adjustRate = 1;
   return FORWARD;
 }
 
 float getBearingTo(float det_lat, float det_lon){
-  return calcBearing(currLat, currLon, det_lat, det_lon);
+  //Serial.print("bearing: ");
+  //Serial.println(calcBearing(43.13372820880909, -70.93437840885116, 43.14063924666028, -70.94233550243678));
+  return calcBearing(43.13372820880909, -70.93437840885116, 43.14063924666028, -70.94233550243678);
+  //return calcBearing(currLat, currLon, det_lat, det_lon);
 }
 
 float calcBearing(float start_lat, float start_lon, float det_lat, float det_lon){
-  // get bearing based on two GPS locations
+  // get bearing based on two GPS locations - RADIANS
+//  float y = sin(det_lon - start_lon) * cos(det_lat);
+//  float x = cos(start_lat)*sin(det_lat) - sin(start_lat)*cos(det_lat)*cos(det_lon - start_lon);
+//  return atan2(y, x);
+
+//  get bearing based on two GPS locations - DEGREES
   float y = sin(det_lon - start_lon) * cos(det_lat);
   float x = cos(start_lat)*sin(det_lat) - sin(start_lat)*cos(det_lat)*cos(det_lon - start_lon);
-  return atan2(y, x);
+  float theta = atan2(y, x);
+  float deg = theta*(180/M_PI);
+
+  if(deg < 0) deg = 360 + deg;
+  return deg;
+
 }
 
 float getHeading(){
   // since we use the z axis for heading, and azimuth is calculated clockwise:
-  return -atan2(imu.mag_y(),imu.mag_x());
+  //return -atan2(imu.mag_y(),imu.mag_x());
+  float theta = 0.0;
+  theta = atan2(imu.mag_y(),imu.mag_x());
+  return theta;
+}
+
+int adjustGoal(){
+  goalLat = 43.14067;
+  goalLon = -70.944108;
+  float diff = getBearingTo(goalLat, goalLon);
+  if(getHeading() < diff - .1){
+    // LEFT
+    digitalWrite(22,HIGH);
+    digitalWrite(23,LOW);
+    analogWrite(2,TURNPOWER);
+    analogWrite(3,TURNPOWER);
+    #if DEBUG_THREADS
+      Serial.println("adjust -- left");
+    #endif
+  }
+  else if(getHeading() > diff + .1){
+    // RIGHT
+    digitalWrite(22,LOW);
+    digitalWrite(23,HIGH);
+    analogWrite(2,TURNPOWER);
+    analogWrite(3,TURNPOWER);
+    #if DEBUG_THREADS
+      Serial.println("adjust -- right");
+    #endif
+  }
+  else{
+    // FORWARD
+    digitalWrite(22,HIGH);
+    digitalWrite(23,HIGH);
+    analogWrite(2,POWER);
+    analogWrite(3,POWER);
+    #if DEBUG_THREADS
+      Serial.println("to goal -- forward");
+    #endif
+  }
 }
