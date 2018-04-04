@@ -10,7 +10,6 @@ Features:
 
 Non-default Libraries Used:
 * Adafruit GPS Library
-* IMU (library written and shared with us by Evan Grissino)
+* Adafruit 9DOF Library
 * Sparkfun MPL3115A2
 * Protothread https://github.com/fernandomalmeida/protothreads-arduino
-* Matrix Math https://github.com/eecharlie/MatrixMath
