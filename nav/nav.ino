@@ -1,16 +1,14 @@
 #include <Adafruit_GPS.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_LSM303_U.h>
+#include <Adafruit_L3GD20_U.h>
+#include <Adafruit_9DOF.h>
 #include <SparkFunMPL3115A2.h>
-#include <IMU.h>
 #include <math.h>
-#include <MatrixMath.h>
 #include <pt.h>
 #include <timer.h>
 
 /* ##### +Behavior changes ##### */
-// Set CALIBRATE_GYRO to true or false to enable or disable the gyroscope calibration step
-// This step takes many samples on initialization and averages them to zero out
-#define CALIBRATE_GYRO true
-
 // simple state for serial control
 int forceDirection = 0;
 
@@ -55,7 +53,9 @@ int adjustRate = 1;
 /* ##### +Declarations ##### */
 // Sensors
 Adafruit_GPS GPS(&Serial1);
-IMU imu;
+Adafruit_9DOF dof = Adafruit_9DOF();
+Adafruit_LSM303_Accel_Unified accel = Adafruit_LSM303_Accel_Unified(30301);
+Adafruit_LSM303_Mag_Unified mag = Adafruit_LSM303_Mag_Unified(30302);
 MPL3115A2 pressure_sensor;
 
 // protothreads
@@ -72,7 +72,7 @@ int lastsensorpindata2 = 0;
 int lastsensorpindata3 = 0;
 
 // current data values
-float heading = -1.0;
+sensors_vec_t orientation = {};
 float currAltitude = -1.0;
 float goalLat = -1.0;
 float goalLon = -1.0;
@@ -91,9 +91,12 @@ void setup(){
   digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
   digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
 
+  #if USE_PRESSURE || USE_IMU
+    Wire.begin(); // join ic2 bus
+  #endif
+  
   #if USE_PRESSURE
     /* initialize pressure sensor */
-    Wire.begin(); // join ic2 bus
     pressure_sensor.begin();
     pressure_sensor.setModeAltimeter();
     pressure_sensor.setOversampleRate(7);
@@ -102,7 +105,8 @@ void setup(){
 
   #if USE_IMU
     /* initialize IMU */
-    imu.initalize(CALIBRATE_GYRO);
+    accel.begin();
+    mag.begin();
   #endif
 
   // initialize threads
@@ -267,8 +271,13 @@ static PT_THREAD(sensorThread(struct pt *pt)){
     #endif
 
     #if USE_IMU
-      // update internal imu values
-      imu.read();
+      // update orientation struct
+      sensors_event_t accel_event;
+      sensors_event_t mag_event;
+      accel.getEvent(&accel_event);
+      mag.getEvent(&mag_event);
+      // TODO: There is a fucntion of the lib to correct for tilt
+      dof.fusionGetOrientation(&accel_event, &mag_event, &orientation);
     #endif
 
     #if DEBUG_THREADS
@@ -305,7 +314,7 @@ static PT_THREAD(debugThread(struct pt *pt)){
 
     #if USE_IMU
       Serial.print("Heading: ");
-      Serial.println(getHeading());
+      Serial.println(orientation.heading);
     #endif
     
     timer_reset(&t);
@@ -402,9 +411,10 @@ int irsensor(){
 }
 
 float getBearingTo(float det_lat, float det_lon){
+  // bearing is flipped to counterclockwise to match heading
   //Serial.print("bearing: ");
   //Serial.println(calcBearing(43.13372820880909, -70.93437840885116, 43.14063924666028, -70.94233550243678));
-  return calcBearing(43.13372820880909, -70.93437840885116, 43.14063924666028, -70.94233550243678);
+  return -calcBearing(43.13372820880909, -70.93437840885116, 43.14063924666028, -70.94233550243678);
   //return calcBearing(currLat, currLon, det_lat, det_lon);
 }
 
@@ -425,19 +435,11 @@ float calcBearing(float start_lat, float start_lon, float det_lat, float det_lon
 
 }
 
-float getHeading(){
-  // since we use the z axis for heading, and azimuth is calculated clockwise:
-  //return -atan2(imu.mag_y(),imu.mag_x());
-  float theta = 0.0;
-  theta = atan2(imu.mag_y(),imu.mag_x());
-  return theta;
-}
-
 int adjustGoal(){
   goalLat = 43.14067;
   goalLon = -70.944108;
   float diff = getBearingTo(goalLat, goalLon);
-  if(getHeading() < diff - .1){
+  if(orientation.heading < diff - .1){
     // LEFT
     digitalWrite(22,HIGH);
     digitalWrite(23,LOW);
@@ -447,7 +449,7 @@ int adjustGoal(){
       Serial.println("adjust -- left");
     #endif
   }
-  else if(getHeading() > diff + .1){
+  else if(orientation.heading > diff + .1){
     // RIGHT
     digitalWrite(22,LOW);
     digitalWrite(23,HIGH);
