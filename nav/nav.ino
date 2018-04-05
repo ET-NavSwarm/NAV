@@ -10,7 +10,7 @@
 
 /* ##### +Behavior changes ##### */
 // simple state for serial control
-int forceDirection = 0;
+int forceDirection = -1;
 
 //This value is the power sent to the robot.
 //0 is no power and 255 is max power. 
@@ -38,7 +38,7 @@ int adjustRate = 1;
 #define DEBUG_ANTENNA false
 
 // Causes a message to be sent on Serial whenever a thread is yielded to
-#define DEBUG_THREADS false
+#define DEBUG_THREADS true
 /* ##### -Debugging ##### */
 
 /* ##### +Constants ##### */
@@ -76,6 +76,7 @@ sensors_vec_t orientation = {};
 float currAltitude = -1.0;
 float goalLat = -1.0;
 float goalLon = -1.0;
+float goalBearing = -1.0;
 float currLat = -1.0;
 float currLon = -1.0;
 /* ##### -Declarations ##### */
@@ -92,7 +93,7 @@ void setup(){
   digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
 
   #if USE_PRESSURE || USE_IMU
-    Wire.begin(); // join ic2 bus
+    Wire.begin(); // join i2c bus
   #endif
   
   #if USE_PRESSURE
@@ -105,8 +106,10 @@ void setup(){
 
   #if USE_IMU
     /* initialize IMU */
-    accel.begin();
-    mag.begin();
+    if(!mag.begin() || !accel.begin()){
+      Serial.println("IMU connection error");
+      while(1);
+    }
   #endif
 
   // initialize threads
@@ -133,6 +136,11 @@ void setup(){
     OCR0A = 0xAF;
     TIMSK0 |= _BV(OCIE0A);
   #endif
+
+  // debug hardcoded goal
+  goalLat = 43.14063924666028;
+  goalLon = -70.94233550243678;
+  goalBearing = getBearingTo(goalLat, goalLon);
 }
 
 #if USE_GPS
@@ -177,16 +185,16 @@ static PT_THREAD(serialThread(struct pt *pt)){
 }
 
 static PT_THREAD(driveThread(struct pt *pt)){
-  static struct timer t_main;
   static struct timer t_movement;
+  static struct timer t_no_adjust;
   
   PT_BEGIN(pt);
-
-  timer_set(&t_main, 0.1*CLOCK_SECOND);
+  
   timer_set(&t_movement, 0); // immediately expire for now
+  timer_set(&t_no_adjust, 0); // immediately expire for now
 
   while(1){
-    PT_WAIT_UNTIL(pt, timer_expired(&t_main) && timer_expired(&t_movement));
+    PT_WAIT_UNTIL(pt, timer_expired(&t_movement));
     int dir = irsensor();
     switch (dir) {
       case BACKWARD:
@@ -210,9 +218,10 @@ static PT_THREAD(driveThread(struct pt *pt)){
       case LEFT:
         digitalWrite(22,HIGH);
         digitalWrite(23,LOW);
-        analogWrite(2,TURNPOWER);
-        analogWrite(3,TURNPOWER);
-        timer_set(&t_movement, 0.4*CLOCK_SECOND);
+        analogWrite(2,TURNPOWER/2);
+        analogWrite(3,TURNPOWER/2);
+        timer_set(&t_movement, 0.6*CLOCK_SECOND);
+        timer_set(&t_no_adjust, 1.4*CLOCK_SECOND);
         #if DEBUG_THREADS
           Serial.println("drive -- left");
         #endif
@@ -220,25 +229,29 @@ static PT_THREAD(driveThread(struct pt *pt)){
       case RIGHT:
         digitalWrite(22,LOW);
         digitalWrite(23,HIGH);
-        analogWrite(2,TURNPOWER);
-        analogWrite(3,TURNPOWER);
-        timer_set(&t_movement, 0.4*CLOCK_SECOND);
+        analogWrite(2,TURNPOWER/2);
+        analogWrite(3,TURNPOWER/2);
+        timer_set(&t_movement, 0.6*CLOCK_SECOND);
+        timer_set(&t_no_adjust, 1.4*CLOCK_SECOND);
         #if DEBUG_THREADS
           Serial.println("drive -- right");
         #endif
         break;
       default:
-        // FORWARD
-        digitalWrite(22,HIGH);
-        digitalWrite(23,HIGH);
-        analogWrite(2,POWER);
-        analogWrite(3,POWER);
+        if(timer_expired(&t_no_adjust)){
+          adjustGoal();
+        } else {
+          //FORWARD
+          digitalWrite(22,HIGH);
+          digitalWrite(23,HIGH);
+          analogWrite(2,POWER);
+          analogWrite(3,POWER);
+          #if DEBUG_THREADS
+            Serial.println("drive -- forward");
+          #endif
+        }
         // no timer so IR sensors are constantly checked when moving forward
-        #if DEBUG_THREADS
-          Serial.println("drive -- forward");
-        #endif
     }
-    timer_reset(&t_main);
   }
   PT_END(pt);
 }
@@ -266,18 +279,17 @@ static PT_THREAD(sensorThread(struct pt *pt)){
         if (GPS.fix) {
           currLat = GPS.latitudeDegrees;
           currLon = GPS.longitudeDegrees;
+          goalBearing = getBearingTo(goalLat, goalLon);
         }
       }
     #endif
 
     #if USE_IMU
       // update orientation struct
-      sensors_event_t accel_event;
       sensors_event_t mag_event;
-      accel.getEvent(&accel_event);
       mag.getEvent(&mag_event);
       // TODO: There is a fucntion of the lib to correct for tilt
-      dof.fusionGetOrientation(&accel_event, &mag_event, &orientation);
+      dof.magGetOrientation(SENSOR_AXIS_Z, &mag_event, &orientation);
     #endif
 
     #if DEBUG_THREADS
@@ -340,7 +352,7 @@ void loop(){
   driveThread(&ptDrive);
   serialThread(&ptSerial);
   sensorThread(&ptSensor);
-  adjustThread(&ptAdjust);
+  //adjustThread(&ptAdjust);
   #if DEBUG_INFO > 0
     debugThread(&ptDebug);
   #endif
@@ -414,16 +426,11 @@ float getBearingTo(float det_lat, float det_lon){
   // bearing is flipped to counterclockwise to match heading
   //Serial.print("bearing: ");
   //Serial.println(calcBearing(43.13372820880909, -70.93437840885116, 43.14063924666028, -70.94233550243678));
-  return -calcBearing(43.13372820880909, -70.93437840885116, 43.14063924666028, -70.94233550243678);
+  return calcBearing(43.13372820880909, -70.93437840885116, det_lat, det_lon);
   //return calcBearing(currLat, currLon, det_lat, det_lon);
 }
 
 float calcBearing(float start_lat, float start_lon, float det_lat, float det_lon){
-  // get bearing based on two GPS locations - RADIANS
-//  float y = sin(det_lon - start_lon) * cos(det_lat);
-//  float x = cos(start_lat)*sin(det_lat) - sin(start_lat)*cos(det_lat)*cos(det_lon - start_lon);
-//  return atan2(y, x);
-
 //  get bearing based on two GPS locations - DEGREES
   float y = sin(det_lon - start_lon) * cos(det_lat);
   float x = cos(start_lat)*sin(det_lat) - sin(start_lat)*cos(det_lat)*cos(det_lon - start_lon);
@@ -436,31 +443,47 @@ float calcBearing(float start_lat, float start_lon, float det_lat, float det_lon
 }
 
 int adjustGoal(){
-  goalLat = 43.14067;
-  goalLon = -70.944108;
-  float diff = getBearingTo(goalLat, goalLon);
-  if(orientation.heading < diff - .1){
-    // LEFT
-    digitalWrite(22,HIGH);
-    digitalWrite(23,LOW);
-    analogWrite(2,TURNPOWER);
-    analogWrite(3,TURNPOWER);
-    #if DEBUG_THREADS
-      Serial.println("adjust -- left");
-    #endif
-  }
-  else if(orientation.heading > diff + .1){
-    // RIGHT
-    digitalWrite(22,LOW);
-    digitalWrite(23,HIGH);
-    analogWrite(2,TURNPOWER);
-    analogWrite(3,TURNPOWER);
-    #if DEBUG_THREADS
-      Serial.println("adjust -- right");
-    #endif
-  }
-  else{
-    // FORWARD
+  int dir = -1;
+
+  if(orientation.heading - goalBearing > 5 || orientation.heading - goalBearing < -5){
+
+  // update orientation struct
+      sensors_event_t mag_event;
+      mag.getEvent(&mag_event);
+      // TODO: There is a fucntion of the lib to correct for tilt
+      dof.magGetOrientation(SENSOR_AXIS_Z, &mag_event, &orientation);
+
+    float diff = goalBearing - orientation.heading;
+    if(diff < 0)
+      diff += 360;
+    if(diff > 180)
+      dir = LEFT;
+    else
+      dir = RIGHT;
+    
+    Serial.println(goalBearing - orientation.heading);
+    if(dir == LEFT){
+      // LEFT
+      digitalWrite(22,HIGH);
+      digitalWrite(23,LOW);
+      analogWrite(2,60);
+      analogWrite(3,60);
+      #if DEBUG_THREADS
+        Serial.println("adjust -- left");
+      #endif
+    }
+    else{
+      // RIGHT
+      digitalWrite(22,LOW);
+      digitalWrite(23,HIGH);
+      analogWrite(2,60);
+      analogWrite(3,60);
+      #if DEBUG_THREADS
+        Serial.println("adjust -- right");
+      #endif
+    } 
+  } else {
+    // Done Adjusting, move FORWARD
     digitalWrite(22,HIGH);
     digitalWrite(23,HIGH);
     analogWrite(2,POWER);
