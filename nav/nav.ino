@@ -422,21 +422,33 @@ int irsensor(){
   return FORWARD;
 }
 
+float rad2deg(float theta){
+  return theta*180.0/M_PI;
+}
+
+float deg2rad(float theta){
+  return theta*M_PI/180.0;
+}
+
+float normalize_angle(float theta){
+    return theta < 0 ? theta+360.0 : theta;
+}
+
 float getBearingTo(float det_lat, float det_lon){
   // bearing is flipped to counterclockwise to match heading
-  return calcBearing(currLat, currLon, det_lat, det_lon);
+  return -calcBearing(currLat, currLon, det_lat, det_lon);
 }
 
 float calcBearing(float start_lat, float start_lon, float det_lat, float det_lon){
-//  get bearing based on two GPS locations - DEGREES
+  //  get bearing based on two GPS locations - DEGREES
+  start_lat = deg2rad(start_lat);
+  start_lon = deg2rad(start_lon);
+  det_lat = deg2rad(det_lat);
+  det_lon = deg2rad(det_lon);
   float y = sin(det_lon - start_lon) * cos(det_lat);
   float x = cos(start_lat)*sin(det_lat) - sin(start_lat)*cos(det_lat)*cos(det_lon - start_lon);
   float theta = atan2(y, x);
-  float deg = theta*(180/M_PI);
-
-  if(deg < 0) deg = 360 + deg;
-  return deg;
-
+  return normalize_angle(rad2deg(theta));
 }
 
 int adjustGoal(){
