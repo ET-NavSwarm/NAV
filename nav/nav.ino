@@ -443,13 +443,6 @@ int adjustGoal(){
   int dir = -1;
 
   if(orientation.heading - goalBearing > 5 || orientation.heading - goalBearing < -5){
-
-  // update orientation struct
-      sensors_event_t mag_event;
-      mag.getEvent(&mag_event);
-      // TODO: There is a fucntion of the lib to correct for tilt
-      dof.magGetOrientation(SENSOR_AXIS_Z, &mag_event, &orientation);
-
     float diff = goalBearing - orientation.heading;
     if(diff < 0)
       diff += 360;
