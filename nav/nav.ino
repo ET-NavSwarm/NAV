@@ -424,10 +424,7 @@ int irsensor(){
 
 float getBearingTo(float det_lat, float det_lon){
   // bearing is flipped to counterclockwise to match heading
-  //Serial.print("bearing: ");
-  //Serial.println(calcBearing(43.13372820880909, -70.93437840885116, 43.14063924666028, -70.94233550243678));
-  return calcBearing(43.13372820880909, -70.93437840885116, det_lat, det_lon);
-  //return calcBearing(currLat, currLon, det_lat, det_lon);
+  return calcBearing(currLat, currLon, det_lat, det_lon);
 }
 
 float calcBearing(float start_lat, float start_lon, float det_lat, float det_lon){
