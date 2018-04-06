@@ -1,7 +1,6 @@
 #include <Adafruit_GPS.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_LSM303_U.h>
-#include <Adafruit_L3GD20_U.h>
 #include <Adafruit_9DOF.h>
 #include <SparkFunMPL3115A2.h>
 #include <math.h>
@@ -12,13 +11,28 @@
 // simple state for serial control
 int forceDirection = -1;
 
-//This value is the power sent to the robot.
-//0 is no power and 255 is max power. 
+// This value is the power sent to the robot.
+// 0 is no power and 255 is max power. 
 #define POWER 80
 #define TURNPOWER 120
 
-//This is the rate the bot will adjust toward the goal * CLOCK_SECOND
-int adjustRate = 1;
+// Time certain drive actions will be performed. Multiples of seconds.
+// Move is for moving after a turn (so the bot doesn't repeatedly turn back and forth)
+#define TIME_BACK 1.0
+#define TIME_STOP 0.5
+#define TIME_TURN 0.6
+#define TIME_MOVE (1.0 + TIME_TURN)
+
+// Thresholds for ir sensors. higher=closer
+#define IR_THRESH_NEAR 300
+#define IR_THRESH_FAR 210
+
+// Rate at which sensors data will be checked
+// GPS is excluded. GPS is being constantly read by a millisecond interrupt. It will get new data once per second as it is currently set.
+#define SENSOR_RATE 0.2
+
+// When adjusting to goal, this is the allowed error on either side in degrees.
+#define HEADING_PRECISION 5.0
 /* ##### -Behavior changes ##### */
 
 /* ##### +Debugging ##### */
@@ -54,7 +68,6 @@ int adjustRate = 1;
 // Sensors
 Adafruit_GPS GPS(&Serial1);
 Adafruit_9DOF dof = Adafruit_9DOF();
-Adafruit_LSM303_Accel_Unified accel = Adafruit_LSM303_Accel_Unified(30301);
 Adafruit_LSM303_Mag_Unified mag = Adafruit_LSM303_Mag_Unified(30302);
 MPL3115A2 pressure_sensor;
 
@@ -63,7 +76,6 @@ static struct pt ptSerial;
 static struct pt ptSensor;
 static struct pt ptDrive;
 static struct pt ptDebug;
-static struct pt ptAdjust;
 
 // used in irsensor()
 int lastsensorpindata0 = 0;
@@ -98,15 +110,19 @@ void setup(){
   
   #if USE_PRESSURE
     /* initialize pressure sensor */
-    pressure_sensor.begin();
-    pressure_sensor.setModeAltimeter();
-    pressure_sensor.setOversampleRate(7);
-    pressure_sensor.enableEventFlags();
+    if(pressure_sensor.begin()){
+      pressure_sensor.setModeAltimeter();
+      pressure_sensor.setOversampleRate(7);
+      pressure_sensor.enableEventFlags();
+    } else {
+      Serial.println("Pressure sensor connection error");
+      while(1);
+    }
   #endif
 
   #if USE_IMU
     /* initialize IMU */
-    if(!mag.begin() || !accel.begin()){
+    if(!mag.begin()){
       Serial.println("IMU connection error");
       while(1);
     }
@@ -117,7 +133,6 @@ void setup(){
   PT_INIT(&ptSerial);
   PT_INIT(&ptSensor);
   PT_INIT(&ptDebug);
-  PT_INIT(&ptAdjust);
 
   #if USE_GPS
     /* initialize GPS */
@@ -202,7 +217,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
         digitalWrite(23,LOW);            // HIGH for forward LOW for reverse
         analogWrite(2,POWER/2);
         analogWrite(3,POWER/2);
-        timer_set(&t_movement, CLOCK_SECOND);
+        timer_set(&t_movement, TIME_BACK*CLOCK_SECOND);
         #if DEBUG_THREADS
           Serial.println("drive -- backward");
         #endif
@@ -210,7 +225,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
       case STOP:  // Currently only called in testing
         analogWrite(2,0);
         analogWrite(3,0);
-        timer_set(&t_movement, 0.5*CLOCK_SECOND);
+        timer_set(&t_movement, TIME_STOP*CLOCK_SECOND);
         #if DEBUG_THREADS
           Serial.println("drive -- stop");
         #endif
@@ -220,8 +235,8 @@ static PT_THREAD(driveThread(struct pt *pt)){
         digitalWrite(23,LOW);
         analogWrite(2,TURNPOWER/2);
         analogWrite(3,TURNPOWER/2);
-        timer_set(&t_movement, 0.6*CLOCK_SECOND);
-        timer_set(&t_no_adjust, 1.4*CLOCK_SECOND);
+        timer_set(&t_movement, TIME_TURN*CLOCK_SECOND);
+        timer_set(&t_no_adjust, TIME_MOVE*CLOCK_SECOND);
         #if DEBUG_THREADS
           Serial.println("drive -- left");
         #endif
@@ -231,8 +246,8 @@ static PT_THREAD(driveThread(struct pt *pt)){
         digitalWrite(23,HIGH);
         analogWrite(2,TURNPOWER/2);
         analogWrite(3,TURNPOWER/2);
-        timer_set(&t_movement, 0.6*CLOCK_SECOND);
-        timer_set(&t_no_adjust, 1.4*CLOCK_SECOND);
+        timer_set(&t_movement, TIME_TURN*CLOCK_SECOND);
+        timer_set(&t_no_adjust, TIME_MOVE*CLOCK_SECOND);
         #if DEBUG_THREADS
           Serial.println("drive -- right");
         #endif
@@ -260,7 +275,7 @@ static PT_THREAD(sensorThread(struct pt *pt)){
   static struct timer t;
   PT_BEGIN(pt);
 
-  timer_set(&t, 0.2*CLOCK_SECOND);
+  timer_set(&t, SENSOR_RATE*CLOCK_SECOND);
   
   while(1){
     PT_WAIT_UNTIL(pt, timer_expired(&t));
@@ -334,25 +349,10 @@ static PT_THREAD(debugThread(struct pt *pt)){
   PT_END(pt);
 }
 
-static PT_THREAD(adjustThread(struct pt *pt)){
-  static struct timer t;
-  PT_BEGIN(pt);
-
-  timer_set(&t, adjustRate*CLOCK_SECOND);
-
-  while(1){
-    PT_WAIT_UNTIL(pt, timer_expired(&t));
-    adjustGoal();
-    timer_set(&t, adjustRate*CLOCK_SECOND);
-  }
-  PT_END(pt);
-}
-
 void loop(){
   driveThread(&ptDrive);
   serialThread(&ptSerial);
   sensorThread(&ptSensor);
-  //adjustThread(&ptAdjust);
   #if DEBUG_INFO > 0
     debugThread(&ptDebug);
   #endif
@@ -378,9 +378,8 @@ int irsensor(){
   int distance3 = analogRead(A3);
   
   // something is way to close to the front of bot
-  if ( distance0 > 300 || distance1 > 300  ){ 
-    if ( lastsensorpindata0 > 300 || lastsensorpindata1 > 300 ){
-      adjustRate = 5;
+  if ( distance0 > IR_THRESH_NEAR || distance1 > IR_THRESH_NEAR  ){ 
+    if ( lastsensorpindata0 > IR_THRESH_NEAR || lastsensorpindata1 > IR_THRESH_NEAR ){
       setPreviousPins( 0, 0, 0, 0);
       return BACKWARD;
     }
@@ -391,9 +390,8 @@ int irsensor(){
   } 
 
   // obstacle in front
-  else if ( distance0 > 210 || distance1 > 210 ) {
-    if ( lastsensorpindata0 > 210 || lastsensorpindata1 > 210 ){
-      adjustRate = 5;
+  else if ( distance0 > IR_THRESH_FAR || distance1 > IR_THRESH_FAR ) {
+    if ( lastsensorpindata0 > IR_THRESH_FAR || lastsensorpindata1 > IR_THRESH_FAR ){
       setPreviousPins( 0, 0, 0, 0); 
       if ( distance2 > distance3 ){
         return RIGHT;
@@ -405,9 +403,8 @@ int irsensor(){
   }
 
  // obstacle to the sides
-  else if ( distance2 > 300 || distance3 > 300 ) {
-    if ( lastsensorpindata2 > 300 || lastsensorpindata3 > 300 ){
-      adjustRate = 5;
+  else if ( distance2 > IR_THRESH_NEAR || distance3 > IR_THRESH_NEAR ) {
+    if ( lastsensorpindata2 > IR_THRESH_NEAR || lastsensorpindata3 > IR_THRESH_NEAR ){
       setPreviousPins( 0, 0, 0, 0); 
       if ( distance2 > distance3 ){
         return RIGHT;
@@ -418,7 +415,6 @@ int irsensor(){
     } 
   }
   setPreviousPins( distance0, distance1, distance2, distance3);
-  adjustRate = 1;
   return FORWARD;
 }
 
@@ -431,7 +427,8 @@ float deg2rad(float theta){
 }
 
 float normalize_angle(float theta){
-    return theta < 0 ? theta+360.0 : theta;
+  // normalize angle from 0 to 360
+  return theta < 0 ? theta+360.0 : theta;
 }
 
 float getBearingTo(float det_lat, float det_lon){
@@ -454,7 +451,7 @@ float calcBearing(float start_lat, float start_lon, float det_lat, float det_lon
 int adjustGoal(){
   int dir = -1;
 
-  if(orientation.heading - goalBearing > 5 || orientation.heading - goalBearing < -5){
+  if(abs(orientation.heading - goalBearing) > HEADING_PRECISION){
     float diff = goalBearing - orientation.heading;
     if(diff < 0)
       diff += 360;
@@ -468,8 +465,8 @@ int adjustGoal(){
       // LEFT
       digitalWrite(22,HIGH);
       digitalWrite(23,LOW);
-      analogWrite(2,60);
-      analogWrite(3,60);
+      analogWrite(2,TURNPOWER/2);
+      analogWrite(3,TURNPOWER/2);
       #if DEBUG_THREADS
         Serial.println("adjust -- left");
       #endif
@@ -478,8 +475,8 @@ int adjustGoal(){
       // RIGHT
       digitalWrite(22,LOW);
       digitalWrite(23,HIGH);
-      analogWrite(2,60);
-      analogWrite(3,60);
+      analogWrite(2,TURNPOWER/2);
+      analogWrite(3,TURNPOWER/2);
       #if DEBUG_THREADS
         Serial.println("adjust -- right");
       #endif
