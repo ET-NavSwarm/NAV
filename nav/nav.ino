@@ -62,6 +62,17 @@ int forceDirection = -1;
 #define STOP 2
 #define LEFT 3
 #define RIGHT 4
+
+// headers/opcodes sent to pi
+// OPS for OP Send1
+#define OPS_ERROR '\0'
+#define OPS_DEBUG '\1'
+#define OPS_STATUS '\2'
+#define OPS_GPS '\3'
+
+// headers/opcodes received from pi
+// OPR for OP Receive
+#define OPR_GPS '\0'
 /* ##### -Constants ##### */
 
 /* ##### +Declarations ##### */
@@ -93,6 +104,11 @@ float currLat = -1.0;
 float currLon = -1.0;
 /* ##### -Declarations ##### */
 
+void report(char op, const char* s){
+  Serial.print(op);
+  Serial.println(s);
+}
+
 void setup(){
   Serial.begin(9600);               // starts the serial monitor
   
@@ -114,8 +130,9 @@ void setup(){
       pressure_sensor.setModeAltimeter();
       pressure_sensor.setOversampleRate(7);
       pressure_sensor.enableEventFlags();
+      report(OPS_DEBUG, "Pressure sensor connected");
     } else {
-      Serial.println("Pressure sensor connection error");
+      report(OPS_ERROR, "Pressure sensor connection error");
       while(1);
     }
   #endif
@@ -123,7 +140,7 @@ void setup(){
   #if USE_IMU
     /* initialize IMU */
     if(!mag.begin()){
-      Serial.println("IMU connection error");
+      report(OPS_ERROR, "IMU connection error");
       while(1);
     }
   #endif
@@ -181,8 +198,12 @@ static PT_THREAD(serialThread(struct pt *pt)){
 
     #if DEBUG_THREADS
       // simple echo for now just to show it works
-      Serial.println(buff);
+      report(OPS_DEBUG, buff);
     #endif
+
+    if (buff[0] == OPR_GPS){
+      // handle interpretting GPS coordinate from buff
+    }
 
     // change force direction if a direction or "auto" is input
     if (!strcmp(buff, "stop")) forceDirection = STOP;
@@ -219,7 +240,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
         analogWrite(3,POWER/2);
         timer_set(&t_movement, TIME_BACK*CLOCK_SECOND);
         #if DEBUG_THREADS
-          Serial.println("drive -- backward");
+          report(OPS_DEBUG, "drive -- backward");
         #endif
         break;
       case STOP:  // Currently only called in testing
@@ -227,7 +248,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
         analogWrite(3,0);
         timer_set(&t_movement, TIME_STOP*CLOCK_SECOND);
         #if DEBUG_THREADS
-          Serial.println("drive -- stop");
+          report(OPS_DEBUG, "drive -- stop");
         #endif
         break;
       case LEFT:
@@ -238,7 +259,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
         timer_set(&t_movement, TIME_TURN*CLOCK_SECOND);
         timer_set(&t_no_adjust, TIME_MOVE*CLOCK_SECOND);
         #if DEBUG_THREADS
-          Serial.println("drive -- left");
+          report(OPS_DEBUG, "drive -- left");
         #endif
         break;
       case RIGHT:
@@ -249,7 +270,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
         timer_set(&t_movement, TIME_TURN*CLOCK_SECOND);
         timer_set(&t_no_adjust, TIME_MOVE*CLOCK_SECOND);
         #if DEBUG_THREADS
-          Serial.println("drive -- right");
+          report(OPS_DEBUG, "drive -- right");
         #endif
         break;
       default:
@@ -262,7 +283,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
           analogWrite(2,POWER);
           analogWrite(3,POWER);
           #if DEBUG_THREADS
-            Serial.println("drive -- forward");
+            report(OPS_DEBUG, "drive -- forward");
           #endif
         }
         // no timer so IR sensors are constantly checked when moving forward
@@ -308,7 +329,7 @@ static PT_THREAD(sensorThread(struct pt *pt)){
     #endif
 
     #if DEBUG_THREADS
-      Serial.println("sensors updated");
+      report(OPS_DEBUG, "sensors updated");
     #endif
     
     timer_reset(&t);
@@ -326,20 +347,25 @@ static PT_THREAD(debugThread(struct pt *pt)){
     PT_WAIT_UNTIL(pt, timer_expired(&t));
 
     #if USE_GPS
+      Serial.print(OPS_DEBUG);
       Serial.print("Fix: "); Serial.print((int)GPS.fix);
       Serial.print(" quality: "); Serial.println((int)GPS.fixquality);
+      Serial.print(OPS_DEBUG);
       Serial.print("Satellites: "); Serial.println((int)GPS.satellites);
       if (GPS.fix) {
+        Serial.print(OPS_DEBUG);
         Serial.print("Location ");
         Serial.print(GPS.latitudeDegrees, 4);
         Serial.print(", "); 
         Serial.println(GPS.longitudeDegrees, 4);
       } else {
+        Serial.print(OPS_DEBUG);
         Serial.println("no fix yet");
       }
     #endif
 
     #if USE_IMU
+      Serial.print(OPS_DEBUG);
       Serial.print("Heading: ");
       Serial.println(orientation.heading);
     #endif
@@ -460,7 +486,6 @@ int adjustGoal(){
     else
       dir = RIGHT;
     
-    Serial.println(goalBearing - orientation.heading);
     if(dir == LEFT){
       // LEFT
       digitalWrite(22,HIGH);
@@ -468,7 +493,7 @@ int adjustGoal(){
       analogWrite(2,TURNPOWER/2);
       analogWrite(3,TURNPOWER/2);
       #if DEBUG_THREADS
-        Serial.println("adjust -- left");
+        report(OPS_DEBUG, "adjust -- left");
       #endif
     }
     else{
@@ -478,7 +503,7 @@ int adjustGoal(){
       analogWrite(2,TURNPOWER/2);
       analogWrite(3,TURNPOWER/2);
       #if DEBUG_THREADS
-        Serial.println("adjust -- right");
+        report(OPS_DEBUG, "adjust -- right");
       #endif
     } 
   } else {
@@ -488,7 +513,7 @@ int adjustGoal(){
     analogWrite(2,POWER);
     analogWrite(3,POWER);
     #if DEBUG_THREADS
-      Serial.println("to goal -- forward");
+      report(OPS_DEBUG, "to goal -- forward");
     #endif
   }
 }
