@@ -30,19 +30,23 @@ int forceDirection = -1;
 // Rate at which sensors data will be checked
 // GPS is excluded. GPS is being constantly read by a millisecond interrupt. It will get new data once per second as it is currently set.
 #define SENSOR_RATE 0.2
+//Rate at which the bot will make movement decisions. Should be kept low, but too low starves other threads.
+#define DRIVE_RATE 0.05
 
 // When adjusting to goal, this is the allowed error on either side in degrees.
 #define HEADING_PRECISION 5.0
 /* ##### -Behavior changes ##### */
 
 /* ##### +Debugging ##### */
+// Most debug info should be disabled unless needed. Timing will be more precise with less time chruning through serial data.
+
 // frequency to send large amount of debug information on Serial
 // set to 0 to disable
 #define DEBUG_INFO 1
 
 // set any to false to skip that sensor. useful for debugging individual sensors
 #define USE_GPS false
-#define USE_IMU true
+#define USE_IMU false
 #define USE_PRESSURE false
 
 // echoes raw NMEA data to Serial
@@ -111,6 +115,8 @@ void report(char op, const char* s){
 
 void setup(){
   Serial.begin(9600);               // starts the serial monitor
+
+  report(OPS_DEBUG,"Power on");
   
   /* set up motors */
   pinMode(2,OUTPUT);                // PWM pin 1 from motor driver
@@ -119,6 +125,8 @@ void setup(){
   pinMode(23,OUTPUT);               // Direction pin 2 from motor driver
   digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
   digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
+
+  report(OPS_DEBUG, "Motor pins set");
 
   #if USE_PRESSURE || USE_IMU
     Wire.begin(); // join i2c bus
@@ -142,6 +150,8 @@ void setup(){
     if(!mag.begin()){
       report(OPS_ERROR, "IMU connection error");
       while(1);
+    } else {
+      report(OPS_DEBUG, "IMU connecteed");
     }
   #endif
 
@@ -167,6 +177,8 @@ void setup(){
     // this shares the millis() interrupt, so it runs once every millisecond (as such it needs to be very short)
     OCR0A = 0xAF;
     TIMSK0 |= _BV(OCIE0A);
+
+    report(OPS_DEBUG, "GPS setup");
   #endif
 
   // debug hardcoded goal
@@ -223,14 +235,16 @@ static PT_THREAD(serialThread(struct pt *pt)){
 static PT_THREAD(driveThread(struct pt *pt)){
   static struct timer t_movement;
   static struct timer t_no_adjust;
+  static struct timer t_main;
   
   PT_BEGIN(pt);
-  
+
+  timer_set(&t_main, DRIVE_RATE*CLOCK_SECOND); // timer to limit max drive changes, even in adjust and IR checking
   timer_set(&t_movement, 0); // immediately expire for now
   timer_set(&t_no_adjust, 0); // immediately expire for now
 
   while(1){
-    PT_WAIT_UNTIL(pt, timer_expired(&t_movement));
+    PT_WAIT_UNTIL(pt, timer_expired(&t_main) && timer_expired(&t_movement));
     int dir = irsensor();
     switch (dir) {
       case BACKWARD:
@@ -288,6 +302,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
         }
         // no timer so IR sensors are constantly checked when moving forward
     }
+    timer_reset(&t_main);
   }
   PT_END(pt);
 }
