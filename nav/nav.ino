@@ -119,16 +119,6 @@ void setup(){
   Serial.begin(9600);               // starts the serial monitor
 
   report(OPS_DEBUG,"Power on");
-  
-  /* set up motors */
-  pinMode(2,OUTPUT);                // PWM pin 1 from motor driver
-  pinMode(3,OUTPUT);                // PWM pin 2 from motor driver
-  pinMode(22,OUTPUT);               //Direction pin 1 from motor driver
-  pinMode(23,OUTPUT);               // Direction pin 2 from motor driver
-  digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
-  digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
-
-  report(OPS_DEBUG, "Motor pins set");
 
   #if USE_PRESSURE || USE_IMU
     Wire.begin(); // join i2c bus
@@ -182,6 +172,15 @@ void setup(){
 
     report(OPS_DEBUG, "GPS setup");
   #endif
+  
+  /* set up motors */
+  pinMode(2,OUTPUT);                // PWM pin 1 from motor driver
+  pinMode(3,OUTPUT);                // PWM pin 2 from motor driver
+  pinMode(22,OUTPUT);               //Direction pin 1 from motor driver
+  pinMode(23,OUTPUT);               // Direction pin 2 from motor driver
+  digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
+  digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
+  report(OPS_DEBUG, "Motor pins set");
 
   // debug hardcoded goal
   goalLat = 43.14063924666028;
