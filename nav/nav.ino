@@ -43,7 +43,7 @@ int forceDirection = -1;
 
 // frequency to send large amount of debug information on Serial
 // set to 0 to disable
-#define DEBUG_INFO 1
+#define DEBUG_INFO 2
 
 // set any to false to skip that sensor. useful for debugging individual sensors
 #define USE_GPS false
@@ -57,7 +57,10 @@ int forceDirection = -1;
 #define DEBUG_ANTENNA false
 
 // Causes a message to be sent on Serial whenever a thread is yielded to
-#define DEBUG_THREADS true
+#define DEBUG_THREADS false
+
+// Send args back
+#define DEBUG_ARGS true
 /* ##### -Debugging ##### */
 
 /* ##### +Constants ##### */
@@ -78,6 +81,18 @@ int forceDirection = -1;
 // headers/opcodes received from pi
 // OPR for OP Receive
 #define OPR_GPS '\0'
+#define OPR_CONTROL '\1'
+#define OPR_FORCE_DIRECTION '\2'
+
+// structs to interpret incoming data
+struct R_GPS {
+  float lat;
+  float lon;
+};
+struct R_CONTROL {
+  float left;
+  float right;
+};
 /* ##### -Constants ##### */
 
 /* ##### +Declarations ##### */
@@ -216,15 +231,35 @@ static PT_THREAD(serialThread(struct pt *pt)){
 
     if (buff[0] == OPR_GPS){
       // handle interpretting GPS coordinate from buff
-    }
+      struct R_GPS *args = (struct R_GPS *)(buff+1);
+      
+      #if DEBUG_ARGS
+        Serial.print(OPS_DEBUG); Serial.print("GPS: ");
+        Serial.print(args->lat, 6); Serial.print(", "); Serial.println(args->lon, 6);
+      #endif
+    } else
+    if (buff[0] == OPR_CONTROL){
+      // handle manual control
+      struct R_CONTROL *args = (struct R_CONTROL *)(buff+1);
+      
+      #if DEBUG_ARGS
+        Serial.print(OPS_DEBUG); Serial.print("CONTROL: "); 
+        Serial.print(args->left, 6); Serial.print(", "); Serial.println(args->right, 6);
+      #endif
+    } else
+    if (buff[0] == OPR_FORCE_DIRECTION){
+      // change force direction if a direction or "auto" is input
+      if (!strcmp(buff+1, "stop")) forceDirection = STOP;
+      if (!strcmp(buff+1, "forward")) forceDirection = FORWARD;
+      if (!strcmp(buff+1, "backward")) forceDirection = BACKWARD;
+      if (!strcmp(buff+1, "left")) forceDirection = LEFT;
+      if (!strcmp(buff+1, "right")) forceDirection = RIGHT;
+      if (!strcmp(buff+1, "auto")) forceDirection = -1;
 
-    // change force direction if a direction or "auto" is input
-    if (!strcmp(buff, "stop")) forceDirection = STOP;
-    if (!strcmp(buff, "forward")) forceDirection = FORWARD;
-    if (!strcmp(buff, "backward")) forceDirection = BACKWARD;
-    if (!strcmp(buff, "left")) forceDirection = LEFT;
-    if (!strcmp(buff, "right")) forceDirection = RIGHT;
-    if (!strcmp(buff, "auto")) forceDirection = -1;
+      #if DEBUG_ARGS
+        Serial.print(OPS_DEBUG); Serial.println(buff+1);
+      #endif
+    }
 
     // clear buffer
     for (int i=0; i<numBytes; i++) buff[i] = '\0';
