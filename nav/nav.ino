@@ -71,18 +71,25 @@ int forceDirection = -1;
 #define LEFT 3
 #define RIGHT 4
 
+// bot states/modes
+#define NAVIGATION 0
+#define FOLLOW 1
+#define MANUAL 2
+
 // headers/opcodes sent to pi
 // OPS for OP Send1
-#define OPS_ERROR '\0'
-#define OPS_DEBUG '\1'
-#define OPS_STATUS '\2'
-#define OPS_GPS '\3'
+#define OPS_RECEIVED '\0'
+#define OPS_ERROR '\1'
+#define OPS_DEBUG '\2'
+#define OPS_STATUS '\3'
+#define OPS_GPS '\4'
 
 // headers/opcodes received from pi
 // OPR for OP Receive
 #define OPR_GPS '\0'
 #define OPR_CONTROL '\1'
 #define OPR_FORCE_DIRECTION '\2'
+#define OPR_MODE '\3'
 
 // structs to interpret incoming data
 struct R_GPS {
@@ -90,8 +97,8 @@ struct R_GPS {
   float lon;
 };
 struct R_CONTROL {
-  float left;
-  float right;
+  short left;
+  short right;
 };
 /* ##### -Constants ##### */
 
@@ -123,6 +130,13 @@ float goalLon = -1.0;
 float goalBearing = -1.0;
 float currLat = -1.0;
 float currLon = -1.0;
+
+// bot behavior state
+int state = NAVIGATION;
+
+// manual drive direction
+float manual_l = -1;
+float manual_r = -1;
 /* ##### -Declarations ##### */
 
 void report(char op, const char* s){
@@ -131,7 +145,7 @@ void report(char op, const char* s){
 }
 
 void setup(){
-  Serial.begin(9600);               // starts the serial monitor
+  Serial.begin(115200);  // USB serial
 
   report(OPS_DEBUG,"Power on");
 
@@ -232,22 +246,30 @@ static PT_THREAD(serialThread(struct pt *pt)){
     if (buff[0] == OPR_GPS){
       // handle interpretting GPS coordinate from buff
       struct R_GPS *args = (struct R_GPS *)(buff+1);
+      goalLat = args->lat;
+      goalLon = args->lon;
       
       #if DEBUG_ARGS
-        Serial.print(OPS_DEBUG); Serial.print("GPS: ");
-        Serial.print(args->lat, 6); Serial.print(", "); Serial.println(args->lon, 6);
+        Serial.print(OPS_DEBUG); Serial.print("GPS: "); Serial.print(args->lat, 6); Serial.print(", "); Serial.println(args->lon, 6);
       #endif
     } else
+    
     if (buff[0] == OPR_CONTROL){
+      state = MANUAL;
+      
       // handle manual control
       struct R_CONTROL *args = (struct R_CONTROL *)(buff+1);
+      manual_l = args->left;
+      manual_r = args->right;
       
       #if DEBUG_ARGS
-        Serial.print(OPS_DEBUG); Serial.print("CONTROL: "); 
-        Serial.print(args->left, 6); Serial.print(", "); Serial.println(args->right, 6);
+        Serial.print(OPS_DEBUG); Serial.print("CONTROL: "); Serial.print(args->left); Serial.print(", "); Serial.println(args->right);
       #endif
     } else
+    
     if (buff[0] == OPR_FORCE_DIRECTION){
+      state = NAVIGATION;
+      
       // change force direction if a direction or "auto" is input
       if (!strcmp(buff+1, "stop")) forceDirection = STOP;
       if (!strcmp(buff+1, "forward")) forceDirection = FORWARD;
@@ -259,10 +281,18 @@ static PT_THREAD(serialThread(struct pt *pt)){
       #if DEBUG_ARGS
         Serial.print(OPS_DEBUG); Serial.println(buff+1);
       #endif
+    } else
+
+    if (buff[0] == OPR_MODE){
+      // change mode
+      state = (int)buff[1];
     }
 
     // clear buffer
     for (int i=0; i<numBytes; i++) buff[i] = '\0';
+
+    // mark ready for new command. pass nothing for now. could return an error or nonce later.
+    Serial.println(OPS_RECEIVED);
   }
   
   PT_END(pt);
@@ -281,63 +311,110 @@ static PT_THREAD(driveThread(struct pt *pt)){
 
   while(1){
     PT_WAIT_UNTIL(pt, timer_expired(&t_main) && timer_expired(&t_movement));
-    int dir = irsensor();
-    switch (dir) {
-      case BACKWARD:
-        digitalWrite(22,LOW);            // HIGH for forward LOW for reverse
-        digitalWrite(23,LOW);            // HIGH for forward LOW for reverse
-        analogWrite(2,POWER/2);
-        analogWrite(3,POWER/2);
-        timer_set(&t_movement, TIME_BACK*CLOCK_SECOND);
-        #if DEBUG_THREADS
-          report(OPS_DEBUG, "drive -- backward");
-        #endif
-        break;
-      case STOP:  // Currently only called in testing
+
+    // behavior state switch
+    if (state == NAVIGATION) {
+      int dir = irsensor();
+      switch (dir) {
+        case BACKWARD:
+          digitalWrite(22,LOW);            // HIGH for forward LOW for reverse
+          digitalWrite(23,LOW);            // HIGH for forward LOW for reverse
+          analogWrite(2,POWER/2);
+          analogWrite(3,POWER/2);
+          timer_set(&t_movement, TIME_BACK*CLOCK_SECOND);
+          #if DEBUG_THREADS
+            report(OPS_DEBUG, "drive -- backward");
+          #endif
+          break;
+        case STOP:  // Currently only called in testing
+          analogWrite(2,0);
+          analogWrite(3,0);
+          timer_set(&t_movement, TIME_STOP*CLOCK_SECOND);
+          #if DEBUG_THREADS
+            report(OPS_DEBUG, "drive -- stop");
+          #endif
+          break;
+        case LEFT:
+          digitalWrite(22,HIGH);
+          digitalWrite(23,LOW);
+          analogWrite(2,TURNPOWER/2);
+          analogWrite(3,TURNPOWER/2);
+          timer_set(&t_movement, TIME_TURN*CLOCK_SECOND);
+          timer_set(&t_no_adjust, TIME_MOVE*CLOCK_SECOND);
+          #if DEBUG_THREADS
+            report(OPS_DEBUG, "drive -- left");
+          #endif
+          break;
+        case RIGHT:
+          digitalWrite(22,LOW);
+          digitalWrite(23,HIGH);
+          analogWrite(2,TURNPOWER/2);
+          analogWrite(3,TURNPOWER/2);
+          timer_set(&t_movement, TIME_TURN*CLOCK_SECOND);
+          timer_set(&t_no_adjust, TIME_MOVE*CLOCK_SECOND);
+          #if DEBUG_THREADS
+            report(OPS_DEBUG, "drive -- right");
+          #endif
+          break;
+        default:
+          if(timer_expired(&t_no_adjust)){
+            adjustGoal();
+          } else {
+            //FORWARD
+            digitalWrite(22,HIGH);
+            digitalWrite(23,HIGH);
+            analogWrite(2,POWER);
+            analogWrite(3,POWER);
+            #if DEBUG_THREADS
+              report(OPS_DEBUG, "drive -- forward");
+            #endif
+          }
+          // no timer so IR sensors are constantly checked when moving forward
+      }
+    } else // endif state==NAVIGATION
+    
+    if (state == MANUAL) {
+      timer_set(&t_no_adjust, 0);  // expire this timer for now
+      
+      if (manual_l == -1 || manual_r == -1){
+        // stop everything
         analogWrite(2,0);
         analogWrite(3,0);
-        timer_set(&t_movement, TIME_STOP*CLOCK_SECOND);
-        #if DEBUG_THREADS
-          report(OPS_DEBUG, "drive -- stop");
-        #endif
-        break;
-      case LEFT:
-        digitalWrite(22,HIGH);
-        digitalWrite(23,LOW);
-        analogWrite(2,TURNPOWER/2);
-        analogWrite(3,TURNPOWER/2);
-        timer_set(&t_movement, TIME_TURN*CLOCK_SECOND);
-        timer_set(&t_no_adjust, TIME_MOVE*CLOCK_SECOND);
-        #if DEBUG_THREADS
-          report(OPS_DEBUG, "drive -- left");
-        #endif
-        break;
-      case RIGHT:
-        digitalWrite(22,LOW);
-        digitalWrite(23,HIGH);
-        analogWrite(2,TURNPOWER/2);
-        analogWrite(3,TURNPOWER/2);
-        timer_set(&t_movement, TIME_TURN*CLOCK_SECOND);
-        timer_set(&t_no_adjust, TIME_MOVE*CLOCK_SECOND);
-        #if DEBUG_THREADS
-          report(OPS_DEBUG, "drive -- right");
-        #endif
-        break;
-      default:
-        if(timer_expired(&t_no_adjust)){
-          adjustGoal();
+      } else {
+        // we have a valid command
+
+        // left side
+        if (manual_l <= 100){
+          digitalWrite(22,LOW);
+          manual_l = 100 - manual_l;
         } else {
-          //FORWARD
           digitalWrite(22,HIGH);
-          digitalWrite(23,HIGH);
-          analogWrite(2,POWER);
-          analogWrite(3,POWER);
-          #if DEBUG_THREADS
-            report(OPS_DEBUG, "drive -- forward");
-          #endif
+          manual_l = manual_l - 100;
         }
-        // no timer so IR sensors are constantly checked when moving forward
-    }
+        analogWrite(2, (int)((manual_l/100.0)*POWER));
+
+        // right side
+        if (manual_r <= 100){
+          digitalWrite(23, LOW);
+          manual_r = 100 - manual_r;
+        } else {
+          digitalWrite(23, HIGH);
+          manual_r = manual_r - 100;
+        }
+        analogWrite(3, (int)((manual_r/100.0)*POWER));
+
+        // reset, stop next loop until there is a new command
+        manual_l = -1;
+        manual_r = -1;
+      }
+      
+      timer_set(&t_movement, 0.2*CLOCK_SECOND);
+    } else // endif state==MANUAL
+
+    if (state == FOLLOW) {
+      // TODO: Followme code here
+    } // endif state==FOLLOW
+    
     timer_reset(&t_main);
   }
   PT_END(pt);
