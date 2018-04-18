@@ -132,7 +132,7 @@ float currLat = -1.0;
 float currLon = -1.0;
 
 // bot behavior state
-int state = NAVIGATION;
+int state = MANUAL;
 
 // manual drive direction
 float manual_l = -1;
@@ -209,6 +209,8 @@ void setup(){
   pinMode(23,OUTPUT);               // Direction pin 2 from motor driver
   digitalWrite(22,HIGH);            // HIGH for forward LOW for reverse
   digitalWrite(23,HIGH);            // HIGH for forward LOW for reverse
+  analogWrite(2,0);
+  analogWrite(3,0);
   report(OPS_DEBUG, "Motor pins set");
 
   // debug hardcoded goal
@@ -408,7 +410,7 @@ static PT_THREAD(driveThread(struct pt *pt)){
         manual_r = -1;
       }
       
-      timer_set(&t_movement, 0.2*CLOCK_SECOND);
+      timer_set(&t_movement, 1*CLOCK_SECOND);
     } else // endif state==MANUAL
 
     if (state == FOLLOW) {
