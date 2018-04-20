@@ -72,6 +72,7 @@ int forceDirection = -1;
 #define RIGHT 4
 
 // bot states/modes
+#define WAITING -1
 #define NAVIGATION 0
 #define FOLLOW 1
 #define MANUAL 2
@@ -97,8 +98,9 @@ struct R_GPS {
   float lon;
 };
 struct R_CONTROL {
-  short left;
-  short right;
+  float left;
+  float right;
+  float duration;
 };
 /* ##### -Constants ##### */
 
@@ -132,11 +134,12 @@ float currLat = -1.0;
 float currLon = -1.0;
 
 // bot behavior state
-int state = MANUAL;
+int state = WAITING;
 
 // manual drive direction
-float manual_l = -1;
-float manual_r = -1;
+float manual_l = 0;
+float manual_r = 0;
+float manual_d = 0;
 /* ##### -Declarations ##### */
 
 void report(char op, const char* s){
@@ -263,6 +266,7 @@ static PT_THREAD(serialThread(struct pt *pt)){
       struct R_CONTROL *args = (struct R_CONTROL *)(buff+1);
       manual_l = args->left;
       manual_r = args->right;
+      manual_d = args->duration;
       
       #if DEBUG_ARGS
         Serial.print(OPS_DEBUG); Serial.print("CONTROL: "); Serial.print(args->left); Serial.print(", "); Serial.println(args->right);
@@ -287,6 +291,9 @@ static PT_THREAD(serialThread(struct pt *pt)){
 
     if (buff[0] == OPR_MODE){
       // change mode
+      #if DEBUG_ARGS
+        Serial.print(OPS_DEBUG); Serial.print("Mode change: "); Serial.println(state);
+      #endif
       state = (int)buff[1];
     }
 
@@ -312,9 +319,16 @@ static PT_THREAD(driveThread(struct pt *pt)){
   timer_set(&t_no_adjust, 0); // immediately expire for now
 
   while(1){
-    PT_WAIT_UNTIL(pt, timer_expired(&t_main) && timer_expired(&t_movement));
+    // we bypass on manual so interrupts are possible.
+    PT_WAIT_UNTIL(pt, timer_expired(&t_main) && (state==MANUAL || timer_expired(&t_movement)));
 
     // behavior state switch
+    if (state == WAITING) {
+      // stop everything
+      analogWrite(2,0);
+      analogWrite(3,0);
+    } else
+    
     if (state == NAVIGATION) {
       int dir = irsensor();
       switch (dir) {
@@ -377,40 +391,25 @@ static PT_THREAD(driveThread(struct pt *pt)){
     
     if (state == MANUAL) {
       timer_set(&t_no_adjust, 0);  // expire this timer for now
+
+      int l = (int)(manual_l*POWER);
+      int r = (int)(manual_r*POWER);
+      digitalWrite(22, l >= 0 ? HIGH : LOW);
+      digitalWrite(23, r >= 0 ? HIGH : LOW);
+      analogWrite(2, abs(l));
+      analogWrite(3, abs(r));
+
+      #if DEBUG_ARGS
+        Serial.print(OPS_DEBUG); Serial.print("Drive set: "); Serial.print(l); Serial.print(", "); Serial.println(r);
+      #endif
+
+      // reset, stop next loop until there is a new command
+      manual_l = 0.0;
+      manual_r = 0.0;
+      manual_d = 0.0;
+      state = WAITING;
       
-      if (manual_l == -1 || manual_r == -1){
-        // stop everything
-        analogWrite(2,0);
-        analogWrite(3,0);
-      } else {
-        // we have a valid command
-
-        // left side
-        if (manual_l <= 100){
-          digitalWrite(22,LOW);
-          manual_l = 100 - manual_l;
-        } else {
-          digitalWrite(22,HIGH);
-          manual_l = manual_l - 100;
-        }
-        analogWrite(2, (int)((manual_l/100.0)*POWER));
-
-        // right side
-        if (manual_r <= 100){
-          digitalWrite(23, LOW);
-          manual_r = 100 - manual_r;
-        } else {
-          digitalWrite(23, HIGH);
-          manual_r = manual_r - 100;
-        }
-        analogWrite(3, (int)((manual_r/100.0)*POWER));
-
-        // reset, stop next loop until there is a new command
-        manual_l = -1;
-        manual_r = -1;
-      }
-      
-      timer_set(&t_movement, 1*CLOCK_SECOND);
+      timer_set(&t_movement, manual_d*CLOCK_SECOND);
     } else // endif state==MANUAL
 
     if (state == FOLLOW) {
