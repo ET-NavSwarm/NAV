@@ -79,18 +79,57 @@ int forceDirection = -1;
 
 // headers/opcodes sent to pi
 // OPS for OP Send1
-#define OPS_RECEIVED '\0'
-#define OPS_ERROR '\1'
-#define OPS_DEBUG '\2'
-#define OPS_STATUS '\3'
-#define OPS_GPS '\4'
+#define OPS_RECEIVED '\1'
+#define OPS_ERROR '\2'
+#define OPS_DEBUG '\3'
+#define OPS_STATUS '\4'
+#define OPS_GPS '\5'
 
 // headers/opcodes received from pi
 // OPR for OP Receive
-#define OPR_GPS '\0'
-#define OPR_CONTROL '\1'
-#define OPR_FORCE_DIRECTION '\2'
-#define OPR_MODE '\3'
+#define OPR_GPS '\1'
+#define OPR_CONTROL '\2'
+#define OPR_FORCE_DIRECTION '\3'
+#define OPR_MODE '\4'
+
+// classes to send data across serial
+// base class with method to serialize and send data
+class BASE {
+  public:
+  void send (){
+    Serial.println((char *)(this));
+  }
+};
+class S_RECEIVED: public BASE {
+  public:
+  const char op = OPS_RECEIVED;
+  const char null = '\0';
+};
+class S_ERROR: public BASE {
+  public:
+  const char op = OPS_ERROR;
+  char msg[62];  // two less than buffer size to fit opcode and terminating /n
+  S_ERROR (char* s) {strcpy(msg, s);}
+};
+class S_DEBUG: public BASE {
+  public:
+  const char op = OPS_DEBUG;
+  char msg[62];  // two less than buffer size to fit opcode and terminating /n
+  S_DEBUG (char* s) {strcpy(msg, s);}
+};
+class S_STATUS: public BASE {
+  public:
+  const char op = OPS_STATUS;
+  char msg[62];  // two less than buffer size to fit opcode and terminating /n
+  S_STATUS (char* s) {strcpy(msg, s);}
+};
+class S_GPS: public BASE {
+  public:
+  const char op = OPS_GPS;
+  float lat,lon;
+  const char null = '\0';
+  S_GPS (float la, float lo){lat=la; lon=lo;}
+};
 
 // structs to interpret incoming data
 struct R_GPS {
